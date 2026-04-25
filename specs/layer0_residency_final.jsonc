@@ -1,0 +1,262 @@
+/**
+ * WISING TAX ENGINE — LAYER 0: JURISDICTION ROUTER
+ * Version 4.0 | April 2026
+ *
+ * PURPOSE
+ * ───────────────────────────────────────────────────────────────────────
+ * Layer 0 is the FRONT DOOR. Its single responsibility is to determine
+ * which country (or countries) has the LEGAL RIGHT TO TAX the user this
+ * year — i.e., to set the `jurisdiction` flag that decides which Layer 1
+ * specialist module(s) get instantiated.
+ *
+ * Layer 0 does NOT pre-classify residency. NR / RNOR / ROR is decided
+ * deterministically inside layer1_india by the RS-001 engine after the
+ * full set of structured questions is collected. Likewise, US residency
+ * (RA / NRA / Dual-Status) is decided inside layer1_us. Layer 0 only
+ * answers: "Whose tax code applies to this person at all?"
+ *
+ * PARALLEL FLAG ARCHITECTURE (v4.0)
+ * ───────────────────────────────────────────────────────────────────────
+ * Layer 0 evaluates TWO independent boolean flags:
+ *
+ *   india_flag = is_indian_citizen
+ *                OR is_pio_or_oci
+ *                OR india_days > 0
+ *                OR has_india_source_income_or_assets = true
+ *
+ *   us_flag    = is_us_citizen
+ *                OR has_green_card
+ *                OR (was_in_us_this_year = true AND us_days > 0)
+ *                OR has_us_source_income_or_assets = true
+ *
+ *   jurisdiction = CASE
+ *     WHEN india_flag AND us_flag       → "dual"
+ *     WHEN india_flag AND NOT us_flag   → "india_only"
+ *     WHEN NOT india_flag AND us_flag   → "us_only"
+ *     ELSE                              → "none"
+ *
+ * The two flags are evaluated COMPLETELY INDEPENDENTLY. No india_days
+ * gate on US questions. No US-status gate on India questions. The
+ * cartesian product is the routing decision.
+ *
+ * SCOPE CONTAINMENT
+ * ───────────────────────────────────────────────────────────────────────
+ * Even though Layer 0 collects a few US-touch questions (citizenship,
+ * Green Card, US days), these exist ONLY to drive the `us_flag`.
+ * Any US-side computation, classification, or compliance logic
+ * lives in layer1_us and is OUT OF SCOPE here.
+ *
+ * v4.0 CHANGE LOG
+ * ───────────────────────────────────────────────────────────────────────
+ * 1. REMOVED `india_income_above_15l` (Q7). The ₹15L threshold is a
+ *    RESIDENCY question (s.6(1A) Deemed Resident), not a JURISDICTION
+ *    question. It now lives in layer1_india.residency_detail as the
+ *    boolean `india_source_income_above_15l`. Layer 0 only asks: "Do
+ *    you have ANY India-source income or assets?" — that is sufficient
+ *    for jurisdiction routing.
+ *
+ * 2. REPLACED with `has_india_source_income_or_assets` (bool, always
+ *    asked). Any India-source income — even ₹1 of NRO interest —
+ *    creates India taxing rights for a non-resident.
+ *
+ * 3. FORMALIZED parallel flag architecture with explicit DERIVED
+ *    `india_flag` and `us_flag` fields.
+ *
+ * 4. `liable_to_tax_in_another_country` KEPT. It is pre-filled into
+ *    Layer 1 for the residency lock. Its Layer 0 gate changed from
+ *    `india_income_above_15l = true` to `is_indian_citizen = true`
+ *    because the Deemed Resident blocker (s.6(1A)) only applies to
+ *    Indian citizens. Non-citizens cannot be deemed residents.
+ *
+ * CONVENTIONS
+ * ───────────────────────────────────────────────────────────────────────
+ * "ENABLED IF"  → show field only when condition is met (frontend gate)
+ * "DERIVED"     → engine-populated; never collected from user
+ * india_tax_year   → "FY2025-26"   (April–March)
+ * us_calendar_year → 2026          (January–December)
+ *
+ * SCREEN FLOW: Single screen. Max ~9 questions, 2 conditional follow-ups.
+ * ───────────────────────────────────────────────────────────────────────
+ */
+{
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // INDIA-FLAG INPUTS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  "is_indian_citizen": null,
+  // CLASSIFICATION: REQUIRED
+  // Q1 | bool
+  // Are you an Indian citizen?
+  // Flag role: contributes to india_flag. Also gates the employment-departure
+  // question (Q9) and the `liable_to_tax_in_another_country` question.
+  // Pre-filled into layer1_india for the RS-001 residency engine.
+
+  "is_pio_or_oci": null,
+  // CLASSIFICATION: CONDITIONAL
+  // Q2 | bool
+  // ENABLED IF: is_indian_citizen = false
+  // Are you a Person of Indian Origin (PIO) or OCI cardholder?
+  // Flag role: contributes to india_flag.
+  // Pre-filled into layer1_india for the 120-day visitor path (s.6(6)(c)).
+
+  "india_days": null,
+  // CLASSIFICATION: REQUIRED
+  // Q3 | integer (0–366)
+  // How many days were you physically present in India this tax year
+  // (1 April 2025 – 31 March 2026)?
+  // Flag role: india_days > 0 → contributes to india_flag.
+  // Pre-filled into layer1_india.residency_detail.days_in_india_current_year.
+  // Layer 1 collects the trip log for audit; the day total is captured here once.
+
+  "has_india_source_income_or_assets": null,
+  // CLASSIFICATION: REQUIRED
+  // Q4 | bool
+  // Do you have any India-source income (NRO/NRE interest, Indian dividends,
+  // Indian rental income, Indian capital gains, Indian salary/pension) or
+  // Indian-situs assets (Indian property, Indian bank accounts, Indian
+  // demat holdings, Indian mutual funds) this year?
+  //
+  // Flag role: catches the case where a person has zero India days and no
+  // Indian citizenship/PIO/OCI but still has India taxing rights through
+  // source-based income (e.g., a US citizen with Indian rental property).
+  //
+  // NOTE: This replaces the old `india_income_above_15l` field. Layer 0
+  // does NOT ask about the ₹15L threshold — that is a RESIDENCY question
+  // (s.6(1A) Deemed Resident) and now lives in Layer 1.
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // US-FLAG INPUTS
+  // No india_days gate on any US question. Evaluated independently.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  "is_us_citizen": null,
+  // CLASSIFICATION: REQUIRED
+  // Q5 | bool
+  // Are you a US citizen?
+  // Flag role: if true → us_flag = true unconditionally. US has worldwide
+  // taxing rights for all citizens regardless of residence.
+
+  "has_green_card": null,
+  // CLASSIFICATION: CONDITIONAL
+  // Q6 | bool
+  // ENABLED IF: is_us_citizen = false
+  // Do you hold a valid US Green Card (Form I-551)?
+  // Flag role: same as is_us_citizen → us_flag = true.
+  // Note: an unsurrendered Green Card (no Form I-407 filed) still creates US
+  // taxing rights even if physically expired. Answer true if never surrendered.
+
+  "was_in_us_this_year": null,
+  // CLASSIFICATION: REQUIRED
+  // Q7 | bool
+  // Were you physically present in the United States at any point this
+  // calendar year (1 January 2026 – 31 December 2026)?
+  // Green Card holders should answer YES even with 0 US days.
+  // NOTE: NO india_days gate. This question is always shown.
+
+  "us_days": null,
+  // CLASSIFICATION: CONDITIONAL
+  // Q7b | integer (0–365)
+  // ENABLED IF: was_in_us_this_year = true
+  // Exactly how many days were you in the US this calendar year?
+  // Flag role: us_days > 0 + was_in_us = true → contributes to us_flag.
+  // Pre-filled into layer1_us.us_residency_detail.us_days_current_year.
+  // The exact SPT computation (3-year weighted formula, closer-connection
+  // exception, dual-status determination) is performed inside layer1_us.
+
+  "has_us_source_income_or_assets": null,
+  // CLASSIFICATION: REQUIRED
+  // Q7c | bool
+  // Do you have any US-source income (US salary, RSU vesting, US rental,
+  // US dividends, US bank interest) or US-situs assets (US brokerage,
+  // US real estate) this year?
+  // Flag role: catches the case where a person has zero US presence
+  // and no US status but still triggers US filing obligations through
+  // ECI / FDAP / withholding events. Contributes to us_flag.
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CROSS-CUTTING PASS-THROUGH INPUTS
+  // These do NOT affect the india_flag or us_flag. They are collected
+  // here for UX efficiency (single screen) and pre-filled into Layer 1.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  "liable_to_tax_in_another_country": null,
+  // CLASSIFICATION: CONDITIONAL
+  // Q8 | bool
+  // ENABLED IF: is_indian_citizen = true
+  // Are you personally liable to pay income tax in any other country this year?
+  //
+  // This question does NOT affect jurisdiction routing. It is collected here
+  // as a UX convenience and pre-filled into layer1_india.residency_detail
+  // where it gates the Deemed Resident path (s.6(1A)).
+  //
+  // Gate rationale: only Indian citizens can be Deemed Residents under s.6(1A).
+  // Non-citizens are never asked because the Deemed Resident provision does
+  // not apply to them.
+  //
+  // UAE residents: UAE has corporate tax (2023) but no personal income tax → false.
+  // This answer is pre-filled into Layer 1; the user is not re-asked.
+
+  "left_india_for_employment_this_year": null,
+  // CLASSIFICATION: CONDITIONAL
+  // Q9 | bool
+  // ENABLED IF: is_indian_citizen = true
+  // Did you leave India THIS year specifically for employment abroad or as an
+  // Indian ship crew member?
+  //
+  // This question does NOT affect jurisdiction routing. It is pre-filled into
+  // layer1_india.residency_detail.employment_or_crew_status gating.
+  //
+  // Note: gate loosened from v2 (no longer requires india_days < 182)
+  // because a citizen who clocked >182 days before departing is still in the
+  // employment-departure exception scope.
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DERIVED OUTPUTS (engine-populated after submission)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  "india_flag": null,
+  // CLASSIFICATION: DERIVED
+  // DERIVED | bool
+  // TRUE when ANY of:
+  //   is_indian_citizen = true
+  //   is_pio_or_oci = true
+  //   india_days > 0
+  //   has_india_source_income_or_assets = true
+  //
+  // If none of the above → FALSE (no India taxing rights).
+
+  "us_flag": null,
+  // CLASSIFICATION: DERIVED
+  // DERIVED | bool
+  // TRUE when ANY of:
+  //   is_us_citizen = true
+  //   has_green_card = true
+  //   (was_in_us_this_year = true AND us_days > 0)
+  //   has_us_source_income_or_assets = true
+  //
+  // If none of the above → FALSE (no US taxing rights).
+
+  "jurisdiction": null
+  // CLASSIFICATION: DERIVED
+  // DERIVED | "india_only" | "us_only" | "dual" | "none"
+  // The primary routing output. Determines which Layer 1 specialist modules
+  // are instantiated for this tax_years row.
+  //
+  //   "dual"       → BOTH layer1_india AND layer1_us are created
+  //                  Triggered when: india_flag = true AND us_flag = true
+  //                  This is the default for any USC/GC holder with non-zero
+  //                  India days, or any Indian resident with US-source income/assets,
+  //                  or any NRI in the US with India-source income.
+  //
+  //   "india_only" → only layer1_india is created
+  //                  Triggered when: india_flag = true AND us_flag = false
+  //
+  //   "us_only"    → only layer1_us is created
+  //                  Triggered when: india_flag = false AND us_flag = true
+  //
+  //   "none"       → no Layer 1 module created
+  //                  Triggered when: india_flag = false AND us_flag = false
+  //                  Foreign national with no India or US exposure.
+  //                  Surfaced to a CA for manual review.
+}

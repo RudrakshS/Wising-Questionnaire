@@ -1,0 +1,1505 @@
+/**
+ * WISING TAX ENGINE — LAYER 1: US SPECIALIST
+ * Version 2.0 | April 2026
+ * Source of truth: WISING-TAX-US-002 v2.3 (OBBBA 2026 Update Edition)
+ *
+ * PURPOSE
+ * ───────────────────────────────────────────────────────────────────────
+ * Collects all US-specific tax data after Layer 0 routes the user to
+ * `us_only` or `dual`. This module is the single source of truth for US
+ * federal residency classification, worldwide-income computation (for
+ * USC/RA), 1040-NR computation (for NRA), AMT, NIIT, FEIE, FTC, state
+ * tax, and all US compliance reporting (FBAR, FATCA, PFIC, 5471, 3520).
+ *
+ * SCOPE CONTAINMENT
+ * ───────────────────────────────────────────────────────────────────────
+ * This file contains US TAX LAW ONLY (federal + state). All India-side
+ * concerns (RNOR/ROR, s.54/54F/54EC, Chapter VI-A 80C/80D/80G, Indian
+ * surcharge, RS-001 residency, NRO/NRE banking) are out of scope and
+ * live in layer1_india.
+ *
+ * For dual residents, the frontend Coordinator merges shared life events
+ * (one property sale → both schemas, with India cost basis on India side
+ * and US cost basis here). This schema collects ONLY the US-specific
+ * data points needed for those events; it does not duplicate India inputs.
+ *
+ * THE US RESIDENCY LOCK
+ * ───────────────────────────────────────────────────────────────────────
+ * The very first thing this module does is run the SPT engine and write
+ * `us_residency_detail.final_us_residency_status`. This DERIVED field is
+ * the LOCK that gates every subsequent section (FEIE, deductions scope,
+ * worldwide vs US-source-only income capture, state tax, FBAR thresholds).
+ *
+ * UNLOCK LOGIC (enforced by frontend + backend)
+ * ───────────────────────────────────────────────────────────────────────
+ * Active when: tax_years.jurisdiction IN ("us_only", "dual")
+ *
+ *   Screen 3A → profile + us_residency_detail        (always; sets the LOCK)
+ *   Screen 3B → state_residency                      (always; CA/NY follow-ups)
+ *   Screen 3C → income_us_source                     (always)
+ *   Screen 3D → income_foreign_source                (ENABLED IF lock IN ["US_CITIZEN","RESIDENT_ALIEN","DUAL_STATUS"])
+ *   Screen 3E → equity_compensation                  (gated by has_equity_comp)
+ *   Screen 3F → foreign_earned_income (FEIE)         (ENABLED IF lock IN ["US_CITIZEN","RESIDENT_ALIEN"] AND claims_feie = true)
+ *   Screen 3G → bank_accounts                        (always)
+ *   Screen 3H → financial_holdings                   (always)
+ *   Screen 3I → real_estate                          (gated)
+ *   Screen 3J → retirement_accounts                  (gated)
+ *   Screen 3K → foreign_entities                     (gated; Forms 5471/8865)
+ *   Screen 3L → foreign_gifts                        (gated; Form 3520)
+ *   Screen 3M → itemized_deductions_and_credits      (always)
+ *   Screen 3N → amt_inputs                           (DERIVED + gated)
+ *   Screen 3O → niit_inputs                          (DERIVED)
+ *   Screen 3P → ftc_inputs                           (ENABLED IF foreign-source income exists)
+ *   Screen 3Q → withholding_and_estimated            (always)
+ *   Screen 3R → nra_specific                         (ENABLED IF lock = "NON_RESIDENT_ALIEN")
+ *
+ * CONVENTIONS
+ * ───────────────────────────────────────────────────────────────────────
+ * "ENABLED IF"  → conditional field/section (frontend hides; backend validates)
+ * "DERIVED"     → engine-computed; never asked of user
+ * "PROGRESSIVE" → collected after onboarding, before final 1040 computation
+ * Amounts       → USD whole units unless paired *_currency field says otherwise
+ * Dates         → "YYYY-MM-DD"
+ * us_calendar_year → 2026 (Jan–Dec) — OBBBA thresholds per IRS Rev. Proc. 2025-32
+ */
+{
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 1 — PROFILE
+  // Screen 3A | Asked of all US users
+  // ══════════════════════════════════════════════════════════════════════
+
+  "profile": {
+
+    "date_of_birth": null,
+    // CLASSIFICATION: REQUIRED
+    // "YYYY-MM-DD"
+    // Drives: 65+ additional standard deduction, OBBBA $6,000 senior deduction
+    // (phase-out 6% of MAGI > $75K single / $150K MFJ; expires after 2028;
+    // NRAs ineligible). Drives RMD age (73 if born 1951-1959; 75 if born 1960+
+    // per SECURE Act 2.0).
+
+    "filing_status": null,
+    // CLASSIFICATION: REQUIRED
+    // "single" | "mfj" | "mfs" | "hoh" | "qss"
+    // Drives every bracket, deduction cap, and phase-out in the schema.
+    // NRA default: "single" or "mfs" (NRAs cannot file MFJ unless §6013(g)/(h)
+    // election made — see nra_specific block).
+
+    "ssn_or_itin": null,
+    // CLASSIFICATION: OPTIONAL
+    // string — SSN (NNN-NN-NNNN) or ITIN (9NN-NN-NNNN).
+    // ITIN holders apply via Form W-7 (US-002 §17, Fix #13).
+
+    "ssn_or_itin_type": null,
+    // CLASSIFICATION: REQUIRED
+    // "ssn" | "itin" | "none"
+    // "none" → engine surfaces ITIN application requirement (Form W-7) before
+    // any 1040/1040-NR can be filed.
+
+    "dependents_count": null,
+    // CLASSIFICATION: OPTIONAL
+    // integer — total dependents claimed.
+
+    "spouse_is_us_person": null
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: filing_status IN ["mfj","mfs","hoh"]
+    // Drives §6013(g)/(h) NRA-spouse election eligibility and CTC qualifying-child
+    // ITIN/SSN restrictions.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 2 — US RESIDENCY DETAIL  +  THE LOCK
+  // Screen 3A continued | Asked of all US users
+  // Runs the SPT engine and writes the LOCK.
+  // Source: WISING-TAX-US-001 v1.1 (Residential Status)
+  // ══════════════════════════════════════════════════════════════════════
+
+  "us_residency_detail": {
+
+    // ── Status flags (carry over from Layer 0) ───────────────────────
+    "is_us_citizen": null,
+    // CLASSIFICATION: REQUIRED
+    // bool. Pre-filled from Layer 0 is_us_citizen.
+    // If true → final_us_residency_status = "US_CITIZEN"; SPT not evaluated;
+    // worldwide income taxed.
+
+    "has_green_card": null,
+    // CLASSIFICATION: REQUIRED
+    // bool. Pre-filled from Layer 0 has_green_card.
+    // Unsurrendered Green Card (no Form I-407) → "RESIDENT_ALIEN" regardless of days.
+
+    "green_card_grant_date": null,
+    // CLASSIFICATION: CONDITIONAL
+    // "YYYY-MM-DD"
+    // ENABLED IF: has_green_card = true
+    // Drives: residency start date (first day physically present in US after grant),
+    // covered-expatriate 8-year LTR test (US-002 §10.3), and dual-status year detection.
+
+    "i407_surrendered_date": null,
+    // CLASSIFICATION: CONDITIONAL
+    // "YYYY-MM-DD" | nullable
+    // ENABLED IF: has_green_card = true (historical)
+    // Drives the §877A expatriation tax cascade and Long-Term Resident determination.
+
+    // ── Substantial Presence Test inputs (US-002 §0.2 / US-001) ──────
+    "us_days_current_year": null,
+    // CLASSIFICATION: REQUIRED
+    // integer (0–365)
+    // Pre-filled from Layer 0 us_days. Days physically present in CY 2026.
+
+    "us_days_minus_1_year": null,
+    // CLASSIFICATION: REQUIRED
+    // integer (0–365)
+    // Days physically present in CY 2025. Counted at 1/3 weight for SPT.
+
+    "us_days_minus_2_years": null,
+    // CLASSIFICATION: REQUIRED
+    // integer (0–365)
+    // Days physically present in CY 2024. Counted at 1/6 weight for SPT.
+
+    "exempt_individual_status": null,
+    // CLASSIFICATION: REQUIRED
+    // "none" | "f_student" | "j_scholar" | "g_diplomat" | "professional_athlete"
+    // Days as an exempt individual do NOT count toward SPT.
+    // F/J students: typically exempt for first 5 calendar years.
+    // J scholars/teachers: typically exempt for 2 of last 6 calendar years.
+
+    "closer_connection_claim": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: spt_test_met = true AND us_days_current_year < 183
+    // Triggers Form 8840 (Closer Connection Exception). Requires tax home and
+    // closer connection to a foreign country.
+
+    "first_year_choice_election": null,
+    // CLASSIFICATION: OPTIONAL
+    // bool — §7701(b)(4) first-year choice for partial-year residency.
+
+    "s6013g_joint_election": null,
+    // CLASSIFICATION: OPTIONAL
+    // bool — NRA spouse elects to be treated as RA for joint filing.
+
+    // ── DERIVED FIELDS ───────────────────────────────────────────────
+    "spt_day_count_weighted": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | number
+    // Formula: us_days_current_year + (us_days_minus_1_year / 3) + (us_days_minus_2_years / 6)
+    // Exempt-individual days are subtracted before the weighting.
+
+    "spt_test_met": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | bool
+    // True iff: us_days_current_year >= 31 AND spt_day_count_weighted >= 183.
+
+    "final_us_residency_status": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | "US_CITIZEN" | "RESIDENT_ALIEN" | "NON_RESIDENT_ALIEN" | "DUAL_STATUS"
+    //
+    // THE LOCK. Computed immediately after the questions above. NEVER asked.
+    //
+    // Derivation cascade:
+    //   1. is_us_citizen = true                                         → "US_CITIZEN"
+    //   2. has_green_card = true AND no i407_surrendered_date this year → "RESIDENT_ALIEN"
+    //   3. spt_test_met = true AND closer_connection_claim != true      → "RESIDENT_ALIEN"
+    //   4. Mid-year arrival/departure with partial-year residency       → "DUAL_STATUS"
+    //      (e.g., GC granted mid-year, first-year choice elected, or
+    //       expatriation mid-year)
+    //   5. Else                                                         → "NON_RESIDENT_ALIEN"
+    //
+    // ALL DOWNSTREAM SECTION GATES READ THIS FIELD. The lock must be set
+    // before the frontend reveals any further screens.
+    //
+    // Income scope by lock:
+    //   US_CITIZEN / RESIDENT_ALIEN → worldwide income (Form 1040)
+    //   NON_RESIDENT_ALIEN          → US-source ECI + FDAP only (Form 1040-NR)
+    //   DUAL_STATUS                 → split-year computation (1040 + 1040-NR statement)
+
+    "residency_start_date": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | "YYYY-MM-DD" | nullable
+    // First day of US residency for the year. Used for dual-status splits.
+
+    "residency_end_date": null
+    // CLASSIFICATION: DERIVED
+    // DERIVED | "YYYY-MM-DD" | nullable
+    // Last day of US residency for the year. Used for dual-status splits.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 3 — STATE RESIDENCY (US-002 §12)
+  // Screen 3B | Asked of all US users
+  // ══════════════════════════════════════════════════════════════════════
+
+  "state_residency": {
+
+    "primary_state_of_residence": null,
+    // CLASSIFICATION: REQUIRED
+    // 2-letter US state code e.g. "CA" | "NY" | "TX" | "FL" | "WA"
+    // Drives the state tax computation. CA top rate 13.3% (>$1M), NY 10.9% +
+    // NYC 3.88%, TX/FL/WA/NV/SD/WY/AK/TN/NH 0% state tax.
+
+    "moved_states_this_year": null,
+    // CLASSIFICATION: REQUIRED
+    // bool
+    // true → part-year resident return required in BOTH states.
+
+    "previous_state": null,
+    // CLASSIFICATION: CONDITIONAL
+    // ENABLED IF: moved_states_this_year = true
+    // 2-letter US state code.
+
+    "move_date": null,
+    // CLASSIFICATION: CONDITIONAL
+    // "YYYY-MM-DD"
+    // ENABLED IF: moved_states_this_year = true
+
+    "state_days_in_current_state": null,
+    // CLASSIFICATION: CONDITIONAL
+    // integer
+    // ENABLED IF: moved_states_this_year = true
+    // Drives part-year apportionment.
+
+    // ── California-specific (US-002 §12.3, §12.4) ────────────────────
+    "ca_planning_departure": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: primary_state_of_residence = "CA" OR previous_state = "CA"
+    // CA aggressively pursues departing residents under the FTB "safe harbor"
+    // rules. Triggers domicile-exit planning workflow.
+
+    "ca_safe_harbor_employment_contract": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: ca_planning_departure = true
+    // 546-day employment-abroad safe harbor (CA R&TC §17014(d)).
+
+    "ca_retains_property_or_voter_reg": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: ca_planning_departure = true
+    // Strong domicile-retention indicator; FTB will likely contest non-residency.
+
+    // ── New York-specific (US-002 §12.1) ─────────────────────────────
+    "ny_183_day_rule_met": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: primary_state_of_residence = "NY" OR previous_state = "NY"
+    // NY statutory residency: domicile elsewhere + permanent place of abode in NY
+    // + 183+ NY days = NY resident regardless of intent.
+
+    "ny_permanent_place_of_abode": null
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: primary_state_of_residence = "NY" OR previous_state = "NY"
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 4 — US-SOURCE INCOME (Income Item Schema per US-002 §0A)
+  // Screen 3C | Asked of all US users
+  // Every income row carries source_country and income_type so the FTC
+  // basket engine and DTAA engine can route without hardcoded country logic.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "income_us_source": {
+
+    // ── W-2 wages ────────────────────────────────────────────────────
+    "wages_w2": [
+      {
+        "employer_name": null,
+        // CLASSIFICATION: OPTIONAL
+        "employer_ein": null,
+        // CLASSIFICATION: OPTIONAL
+        "wages_box1_usd": null,                       // Box 1 federal wages
+        // CLASSIFICATION: CONDITIONAL
+        "federal_tax_withheld_usd": null,             // Box 2
+        // CLASSIFICATION: CONDITIONAL
+        "ss_wages_box3_usd": null,                    // Box 3
+        // CLASSIFICATION: OPTIONAL
+        "ss_tax_withheld_usd": null,                  // Box 4
+        // CLASSIFICATION: OPTIONAL
+        "medicare_wages_box5_usd": null,              // Box 5
+        // CLASSIFICATION: OPTIONAL
+        "medicare_tax_withheld_usd": null,            // Box 6
+        // CLASSIFICATION: OPTIONAL
+        "state_wages_box16_usd": null,
+        // CLASSIFICATION: OPTIONAL
+        "state_tax_withheld_box17_usd": null,
+        // CLASSIFICATION: OPTIONAL
+        "is_statutory_employee": null
+        // CLASSIFICATION: OPTIONAL
+      }
+    ],
+
+    // ── 1099-NEC / Self-employment (Schedule C) ──────────────────────
+    "self_employment": {
+      "has_se_income": null,
+      // CLASSIFICATION: REQUIRED
+      "gross_receipts_usd": null,
+      // CLASSIFICATION: CONDITIONAL
+      "expenses_usd": null,
+      // CLASSIFICATION: CONDITIONAL
+      "qbi_eligible": null,
+      // CLASSIFICATION: OPTIONAL
+      // bool — §199A pass-through deduction (made permanent by OBBBA).
+      // 2026 phase-out: $201,775 single / $403,500 MFJ; SSTBs face full phase-out.
+      "is_specified_service_trade": null
+      // CLASSIFICATION: OPTIONAL
+      // bool — consulting, financial services, health, law, etc. (SSTB)
+    },
+
+    // ── 1099-INT / 1099-DIV / 1099-B (US-source interest, dividends, CG) ─
+    "interest_us_source_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "ordinary_dividends_us_source_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "qualified_dividends_us_source_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Subset of ordinary dividends taxed at LTCG rates (held > 60 days).
+
+    "stcg_us_source_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Short-term capital gains (held ≤ 1 year). Taxed at ordinary rates.
+
+    "ltcg_us_source_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Long-term capital gains (held > 1 year). 0%/15%/20% rates.
+
+    // ── Rental, royalties, K-1 ───────────────────────────────────────
+    "rental_income_us_source_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "royalty_income_us_source_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "k1_passthrough_income_usd": null,
+    // CLASSIFICATION: OPTIONAL
+
+    // ── IRA/401(k) distributions ─────────────────────────────────────
+    "ira_distributions_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "401k_distributions_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "social_security_benefits_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Up to 85% taxable depending on combined income (US-002 §16.2).
+
+    // ── Crypto / VDA (US-002 §14) ────────────────────────────────────
+    "crypto_transactions": [
+      {
+        "asset": null,                              // e.g. "BTC" | "ETH"
+        // CLASSIFICATION: OPTIONAL
+        "acquisition_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "disposal_date": null,
+        "proceeds_usd": null,
+        // CLASSIFICATION: CONDITIONAL
+        "cost_basis_usd": null,
+        // CLASSIFICATION: CONDITIONAL
+        "is_long_term": null
+        // CLASSIFICATION: CONDITIONAL
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 5 — FOREIGN-SOURCE INCOME (US-002 §2)
+  // Screen 3D | ENABLED IF: lock IN ["US_CITIZEN","RESIDENT_ALIEN","DUAL_STATUS"]
+  // NRAs do NOT report worldwide income — block hidden for NRA lock.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "income_foreign_source": {
+
+    // ── Foreign employment income ────────────────────────────────────
+    "foreign_wages": [
+      {
+        "source_country": null,                     // ISO 3166-1 alpha-2 e.g. "IN"
+        // CLASSIFICATION: CONDITIONAL
+        "employer_name": null,
+        // CLASSIFICATION: OPTIONAL
+        "gross_wages_local_ccy": null,
+        // CLASSIFICATION: CONDITIONAL
+        "local_currency": null,                     // ISO 4217
+        // CLASSIFICATION: CONDITIONAL
+        "gross_wages_usd": null,                    // DERIVED via §988 conversion
+        // CLASSIFICATION: DERIVED
+        "foreign_tax_withheld_local_ccy": null,
+        // CLASSIFICATION: CONDITIONAL
+        "foreign_tax_withheld_usd": null            // DERIVED — feeds FTC
+        // CLASSIFICATION: DERIVED
+      }
+    ],
+
+    // ── Foreign interest / dividends / CG ────────────────────────────
+    "foreign_interest_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Includes NRO/NRE interest. NRE interest is India-exempt but US-taxable
+    // for USC/RA. Engine flags NRE_INDIA_EXEMPT_US_TAXABLE.
+
+    "foreign_dividends_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Indian dividends: 25% India TDS (DTAA Art. 10) → FTC passive basket.
+
+    "foreign_stcg_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "foreign_ltcg_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Indian property CG: India taxes first (DTAA Art. 13) → FTC general basket.
+    // §54 trap: India CG exempt via reinvestment = zero India tax = zero FTC.
+    // Engine flags §54_INDIA_EXEMPT_US_TAXABLE on every Indian property sale
+    // with §54 reinvestment claimed in layer1_india.
+
+    "foreign_rental_income_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "foreign_pension_income_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Indian EPF/PPF distributions: complex US treatment. PPF treated as foreign
+    // grantor trust by some practitioners; engine surfaces CA-review flag.
+
+    // ── §988 currency gain/loss (US-002 §15) ─────────────────────────
+    "section_988_gains_losses": [
+      {
+        "transaction_date": null,
+        // CLASSIFICATION: OPTIONAL
+        "amount_local_ccy": null,
+        // CLASSIFICATION: OPTIONAL
+        "local_currency": null,
+        // CLASSIFICATION: CONDITIONAL
+        "rate_at_receipt": null,
+        // CLASSIFICATION: OPTIONAL
+        "rate_at_conversion": null,
+        // CLASSIFICATION: OPTIONAL
+        "gain_or_loss_usd": null                    // DERIVED — ordinary income/loss
+        // CLASSIFICATION: DERIVED
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 6 — EQUITY COMPENSATION (US-002 §13, §4A)
+  // Screen 3E | Heavy AMT/ISO focus for tech employees.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "equity_compensation": {
+
+    "has_equity_comp": null,                        // bool — gate
+    // CLASSIFICATION: REQUIRED
+
+    // ── ISO — Incentive Stock Options (US-002 §13.2, §4A.3) ──────────
+    "iso_exercises": [
+      {
+        "company_name": null,
+        "grant_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "exercise_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "number_of_shares": null,
+        // CLASSIFICATION: CONDITIONAL
+        "exercise_price": null,                     // per share, USD
+        // CLASSIFICATION: CONDITIONAL
+        "fmv_on_exercise_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        // PER SHARE, USD. CRITICAL — drives the AMT preference item:
+        // AMT spread = (fmv_on_exercise_date − exercise_price) × number_of_shares.
+        // No regular tax at exercise; AMT-only. At 28% AMT rate, a $900K spread
+        // generates ~$250K AMT on cash the user has not received.
+        "shares_sold_same_year": null,              // integer — disqualifying disposition
+        // CLASSIFICATION: OPTIONAL
+        "sale_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "sale_price_per_share": null,
+        // CLASSIFICATION: CONDITIONAL
+        "amt_preference_inr": null
+        // CLASSIFICATION: DERIVED
+        // DERIVED | USD — feeds amt_inputs.iso_preference_total_usd
+      }
+    ],
+
+    // ── NSO — Non-Qualified Stock Options (US-002 §13.1) ─────────────
+    "nso_exercises": [
+      {
+        "company_name": null,
+        "exercise_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "number_of_shares": null,
+        // CLASSIFICATION: CONDITIONAL
+        "exercise_price": null,
+        // CLASSIFICATION: CONDITIONAL
+        "fmv_on_exercise_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "ordinary_income_at_exercise_usd": null     // DERIVED — taxed as W-2 wages
+        // CLASSIFICATION: DERIVED
+      }
+    ],
+
+    // ── RSU (US-002 §13.3) ───────────────────────────────────────────
+    "rsu_vestings": [
+      {
+        "company_name": null,
+        "vest_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "shares_vested": null,
+        // CLASSIFICATION: CONDITIONAL
+        "fmv_on_vest_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "ordinary_income_at_vest_usd": null,        // DERIVED — taxed as W-2 wages
+        // CLASSIFICATION: DERIVED
+        "shares_withheld_for_tax": null
+        // CLASSIFICATION: OPTIONAL
+      }
+    ],
+
+    // ── ESPP (US-002 §13.5) ──────────────────────────────────────────
+    "espp_purchases": [
+      {
+        "company_name": null,
+        "purchase_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "shares_purchased": null,
+        // CLASSIFICATION: CONDITIONAL
+        "purchase_price": null,
+        // CLASSIFICATION: CONDITIONAL
+        "fmv_on_purchase_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "fmv_on_offering_date": null,               // for qualifying disposition test
+        // CLASSIFICATION: CONDITIONAL
+        "is_qualifying_disposition": null
+        // CLASSIFICATION: CONDITIONAL
+      }
+    ],
+
+    // ── §83(b) Election — PER GRANT, NOT PER TAXPAYER (US-002 §13.4) ─
+    // §83(b) attaches to a specific transfer of unvested property in connection
+    // with services. Each grant of unvested stock has its own 30-day clock, its
+    // own IRS filing, and its own basis attachment. A founder with multiple
+    // grants (founder stock + early-employee top-ups + co-founder splits) has
+    // multiple independent §83(b) decisions. The schema MUST represent each.
+    "unvested_restricted_stock_awards": [
+      {
+        "company_name": null,
+        "grant_date": null,                         // "YYYY-MM-DD"
+        // CLASSIFICATION: CONDITIONAL
+        "number_of_unvested_shares": null,          // integer
+        // CLASSIFICATION: CONDITIONAL
+        "fmv_at_grant_per_share_usd": null,
+        // CLASSIFICATION: CONDITIONAL
+        // Used to compute the §83(b) inclusion amount = shares × (fmv − price paid).
+        "price_paid_per_share_usd": null,           // often $0 for founder stock
+        // CLASSIFICATION: CONDITIONAL
+
+        "section_83b_election_filed_within_30_days": null,
+        // CLASSIFICATION: CONDITIONAL
+        // bool
+        // CRITICAL: 30-day deadline from THIS grant_date is HARD — no exceptions,
+        // no late-filing relief. Filed with IRS service center + copy to employer.
+        // Election fixes ordinary income at grant FMV and starts LTCG holding period
+        // immediately, but is forfeited if shares are later forfeited (no refund).
+
+        "section_83b_filing_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "YYYY-MM-DD"
+        // ENABLED IF: section_83b_election_filed_within_30_days = true
+
+        "section_83b_inclusion_amount_usd": null,
+        // CLASSIFICATION: DERIVED
+        // DERIVED | USD = number_of_unvested_shares × (fmv_at_grant − price_paid)
+        // Reported as ordinary W-2 wages in the year of election.
+
+        "vesting_schedule_summary": null
+        // CLASSIFICATION: OPTIONAL
+        // string — free text for audit trail e.g. "4yr / 1yr cliff / monthly"
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 7 — FOREIGN EARNED INCOME EXCLUSION (US-002 §4)
+  // Screen 3F | ENABLED IF: lock IN ["US_CITIZEN","RESIDENT_ALIEN"] AND claims_feie = true
+  // Primary tool for US expats living and working in India (US-002 §4.3).
+  // ══════════════════════════════════════════════════════════════════════
+
+  "foreign_earned_income": {
+
+    "claims_feie": null,                            // bool — gate. Form 2555.
+    // CLASSIFICATION: OPTIONAL
+
+    "qualification_test": null,
+    // CLASSIFICATION: CONDITIONAL
+    // "physical_presence" | "bona_fide_residence"
+    // Physical Presence: 330 full days in any 12-month period.
+    // Bona Fide Residence: full tax year as bona fide resident of foreign country.
+
+    "tax_home_country": null,                       // ISO 3166-1 alpha-2
+    // CLASSIFICATION: CONDITIONAL
+
+    "physical_presence_start_date": null,           // ENABLED IF qualification_test = "physical_presence"
+    // CLASSIFICATION: CONDITIONAL
+    "physical_presence_end_date": null,
+    // CLASSIFICATION: CONDITIONAL
+    "days_in_us_during_test_period": null,          // must be ≤ 35 (i.e., 330+ abroad)
+    // CLASSIFICATION: CONDITIONAL
+
+    "bona_fide_residence_start_date": null,         // ENABLED IF qualification_test = "bona_fide_residence"
+    // CLASSIFICATION: CONDITIONAL
+
+    "foreign_earned_income_usd": null,
+    // CLASSIFICATION: CONDITIONAL
+    // Wages/SE income earned while tax home is abroad. Capped at FEIE limit:
+    // OBBBA 2026 → $132,900 per qualifying taxpayer.
+
+    "feie_amount_claimed_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | USD = MIN(foreign_earned_income_usd, $132,900, days_qualifying / 365 × $132,900)
+
+    // ── Foreign Housing Exclusion/Deduction (US-002 §4.2) ────────────
+    "foreign_housing_expenses_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Rent, utilities (excl. telephone), real/personal property insurance,
+    // residential parking, repairs.
+
+    "housing_exclusion_base_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | 16% of FEIE limit = $21,264 for 2026.
+
+    "housing_exclusion_cap_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | 30% of FEIE limit = $39,870 (location-adjusted upward for
+    // high-cost cities per IRS Notice).
+
+    "foreign_housing_exclusion_usd": null
+    // CLASSIFICATION: DERIVED
+    // DERIVED | MAX(0, MIN(foreign_housing_expenses − base, cap − base))
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 8 — BANK ACCOUNTS (US-002 §6.1, §6.2)
+  // Screen 3G | FBAR + Form 8938 driver
+  // For dual residents, this complements (does NOT duplicate) the
+  // layer1_india.bank_accounts block. India captures NRO/NRE/FCNR detail;
+  // here we capture the USD peak/end balances the IRS needs.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "bank_accounts": [
+    {
+      "bank_name": null,
+      // CLASSIFICATION: OPTIONAL
+      "country": null,                              // ISO 3166-1 alpha-2
+      // CLASSIFICATION: CONDITIONAL
+      "is_us_account": null,                        // bool
+      // CLASSIFICATION: REQUIRED
+      "account_type": null,
+      // CLASSIFICATION: REQUIRED
+      // "checking" | "savings" | "money_market" | "cd" | "brokerage_cash"
+      // | "nro" | "nre" | "fcnr" | "rfc"
+
+      "account_number_last_4": null,                // string
+      // CLASSIFICATION: OPTIONAL
+
+      "is_jointly_held": null,                      // bool — affects FBAR aggregation
+      // CLASSIFICATION: OPTIONAL
+      "is_signature_authority_only": null,          // bool — still triggers FBAR
+      // CLASSIFICATION: OPTIONAL
+
+      // ── FBAR / Form 8938 critical fields ──────────────────────────
+      "peak_balance_during_cy_usd": null,
+      // CLASSIFICATION: REQUIRED
+      // CRITICAL | USD
+      // Highest balance at any point during the calendar year, converted to USD
+      // at the Treasury year-end rate (or transaction-date rate, taxpayer's choice
+      // applied consistently). Drives FBAR (FinCEN 114) reporting.
+      //
+      // FBAR threshold: aggregate foreign account peak > $10,000 at ANY point in CY.
+      // FBAR penalty: non-willful up to $10K/account/year; willful up to greater of
+      // $100K or 50% of account value.
+
+      "peak_balance_date": null,                    // "YYYY-MM-DD"
+      // CLASSIFICATION: OPTIONAL
+
+      "cy_end_balance_usd": null,
+      // CLASSIFICATION: REQUIRED
+      // CRITICAL | USD — closing balance on 31 Dec converted at year-end Treasury rate.
+      // Form 8938 thresholds (US-resident): MFJ $100K end / $150K peak;
+      // foreign-resident MFJ: $400K end / $600K peak.
+
+      "interest_credited_cy_usd": null,
+      // CLASSIFICATION: OPTIONAL
+      // Annual interest credited. Routes to income_us_source.interest_us_source_usd
+      // if is_us_account, else to income_foreign_source.foreign_interest_usd.
+
+      "tax_withheld_cy_usd": null,
+      // CLASSIFICATION: OPTIONAL
+      // Foreign withholding tax (e.g., 30% NRO TDS). Routes to FTC passive basket.
+
+      // ── W-8BEN — PER-BROKER, NOT PER-TAXPAYER ─────────────────────
+      // ENABLED IF: lock = "NON_RESIDENT_ALIEN" AND is_us_account = true
+      // CRITICAL: W-8BEN is filed with each US withholding agent (broker, bank,
+      // payor) individually. Each form has its own 3-year clock. A user with
+      // accounts at Schwab, Fidelity, and IBKR has THREE separate W-8BEN
+      // filings — one expiring does not affect the others. The engine MUST
+      // track this per-account, otherwise it will silently assume DTAA rates
+      // are active at brokers where the 30% default is in fact being withheld.
+      "w8ben_filed_with_this_payor": null,          // bool
+      // CLASSIFICATION: CONDITIONAL
+      "w8ben_signature_date": null,                 // "YYYY-MM-DD"
+      // CLASSIFICATION: CONDITIONAL
+      "w8ben_expiry_date": null,
+      // CLASSIFICATION: DERIVED
+      // "YYYY-MM-DD" — DERIVED if signature_date is set: signature_date + 3 years,
+      // expiring on 31 Dec of the third year. Engine fires expiry alert 60 days before.
+      "treaty_country_claimed_with_this_payor": null  // ISO 3166-1 alpha-2
+      // CLASSIFICATION: CONDITIONAL
+    }
+  ],
+
+  "fbar_aggregate_peak_usd": null,
+  // CLASSIFICATION: DERIVED
+  // DERIVED | USD — sum of peak_balance_during_cy_usd across foreign accounts.
+  // > $10,000 → FinCEN 114 mandatory.
+
+  "form_8938_required": null,
+  // CLASSIFICATION: DERIVED
+  // DERIVED | bool — applies the resident/foreign-resident threshold matrix
+  // against fbar_aggregate_peak_usd, cy_end totals, and filing_status.
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 9 — FINANCIAL HOLDINGS (PFIC, foreign brokerage)
+  // Screen 3H | US-002 §6.3, §7
+  // ══════════════════════════════════════════════════════════════════════
+
+  "financial_holdings": [
+    {
+      "asset_name_or_ticker": null,
+      // CLASSIFICATION: OPTIONAL
+      "isin": null,
+      // CLASSIFICATION: OPTIONAL
+      "country_of_issuer": null,                    // ISO 3166-1 alpha-2
+      // CLASSIFICATION: CONDITIONAL
+
+      "broker_name": null,
+      // CLASSIFICATION: OPTIONAL
+      // string e.g. "Schwab" | "Fidelity" | "IBKR" | "Zerodha"
+      // CRITICAL for W-8BEN tracking: holdings at the same broker share the same
+      // W-8BEN. Holdings at different brokers need separate W-8BENs. Engine groups
+      // by broker_name for the per-payor W-8BEN status check below.
+
+      "asset_class": null,
+      // CLASSIFICATION: CONDITIONAL
+      // "us_listed_equity" | "us_etf" | "us_mutual_fund" | "us_bond"
+      // | "foreign_listed_equity" | "foreign_mutual_fund" | "foreign_etf"
+      // | "foreign_bond" | "reit" | "crypto"
+
+      "quantity": null,
+      // CLASSIFICATION: CONDITIONAL
+      "acquisition_date": null,
+      // CLASSIFICATION: CONDITIONAL
+      "cost_basis_usd": null,
+      // CLASSIFICATION: CONDITIONAL
+      "current_market_value_usd": null,
+      // CLASSIFICATION: OPTIONAL
+
+      // ── FBAR/8938 fields for brokerage holdings ───────────────────
+      "peak_balance_during_cy_usd": null,
+      // CLASSIFICATION: REQUIRED
+      "cy_end_balance_usd": null,
+      // CLASSIFICATION: REQUIRED
+
+      // ── PFIC determination (US-002 §6.3, §7) ──────────────────────
+      "is_pfic": null,
+      // CLASSIFICATION: REQUIRED
+      // bool
+      // CRITICAL: virtually every Indian mutual fund, ETF, FoF, ULIP, and
+      // Indian-domiciled hedge fund is a PFIC under §1297. The default §1291
+      // regime applies the highest ordinary rate to "excess distributions"
+      // plus interest charge, with NO loss recognition. Most commonly missed
+      // obligation for NRIs.
+
+      "pfic_election": null,
+      // CLASSIFICATION: CONDITIONAL
+      // ENABLED IF: is_pfic = true
+      // "1291_default" | "mark_to_market" | "qef"
+      //
+      // 1291_default → punitive: excess distributions taxed at top rate +
+      //                interest charge; gain on sale always ordinary income.
+      // mark_to_market → §1296 election; annual mark-to-market gain/loss as
+      //                  ordinary income; available for marketable PFICs only.
+      // qef           → §1295 election; flow-through of ordinary earnings and
+      //                  net capital gain; requires Annual Information Statement
+      //                  from the fund (rare for Indian MFs — most do not provide).
+
+      "pfic_election_first_year": null,             // tax year of first election
+      // CLASSIFICATION: CONDITIONAL
+      "form_8621_filed_prior_years": null,          // bool — prior reporting history
+      // CLASSIFICATION: OPTIONAL
+
+      // ── Sale data (if disposed during CY) ─────────────────────────
+      "sale_date": null,
+      // CLASSIFICATION: CONDITIONAL
+      "sale_proceeds_usd": null,
+      // CLASSIFICATION: CONDITIONAL
+      "is_long_term": null,                         // bool — held > 1 year
+      // CLASSIFICATION: CONDITIONAL
+      "wash_sale_disallowed_loss_usd": null,
+      // CLASSIFICATION: OPTIONAL
+      // §1091 wash sale: 30-day window before/after sale; disallows loss on
+      // repurchase of substantially identical security. Applies to all securities
+      // including foreign stock; does NOT currently apply to crypto.
+
+      // ── W-8BEN — PER-BROKER, NOT PER-TAXPAYER ─────────────────────
+      // ENABLED IF: lock = "NON_RESIDENT_ALIEN" AND country_of_issuer = "US"
+      //             (i.e., the holding generates US-source FDAP withholding)
+      // Same per-payor logic as bank_accounts. The frontend SHOULD deduplicate
+      // by broker_name — ask the user once per broker, then propagate the
+      // same W-8BEN status to every holding at that broker. The schema stores
+      // the status per row so the engine can validate withholding rates per
+      // payment, not per taxpayer.
+      "w8ben_filed_with_this_broker": null,         // bool
+      // CLASSIFICATION: CONDITIONAL
+      "w8ben_signature_date": null,                 // "YYYY-MM-DD"
+      // CLASSIFICATION: CONDITIONAL
+      "w8ben_expiry_date": null,
+      // CLASSIFICATION: DERIVED
+      // "YYYY-MM-DD" — DERIVED if signature_date is set: signature_date + 3 years,
+      // expiring on 31 Dec of the third year. Engine fires expiry alert 60 days before.
+      "treaty_country_claimed_with_this_broker": null  // ISO 3166-1 alpha-2
+      // CLASSIFICATION: CONDITIONAL
+    }
+  ],
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 10 — REAL ESTATE (US-002 §9)
+  // Screen 3I
+  // For dual residents, the property sale itself is captured in
+  // layer1_india.property; here we capture the US-side cost basis and
+  // §121 / §1031 fields.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "real_estate": {
+
+    "has_real_estate_transaction": null,            // bool — gate
+    // CLASSIFICATION: REQUIRED
+
+    "properties": [
+      {
+        "country": null,                            // ISO 3166-1 alpha-2
+        // CLASSIFICATION: CONDITIONAL
+        "property_type": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "primary_residence" | "rental" | "vacation" | "investment" | "land"
+
+        "address": null,
+        // CLASSIFICATION: OPTIONAL
+        "acquisition_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "us_cost_basis_usd": null,
+        // CLASSIFICATION: CONDITIONAL
+        // CRITICAL: this is the US §1012 cost basis, NOT the India indexed cost.
+        // For inherited property: §1014 step-up to FMV at date of death applies
+        // (the schema captures this; cross-engine reconciliation is the
+        // Coordinator's job).
+        "improvements_capitalized_usd": null,
+        // CLASSIFICATION: OPTIONAL
+        "depreciation_taken_usd": null,             // for rental — §1250 recapture
+        // CLASSIFICATION: OPTIONAL
+
+        "sale_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "sale_proceeds_usd": null,
+        // CLASSIFICATION: CONDITIONAL
+        "selling_expenses_usd": null,
+        // CLASSIFICATION: OPTIONAL
+
+        // ── §121 Primary Residence Exclusion (US property only) ─────
+        "section_121_eligible": null,
+        // CLASSIFICATION: CONDITIONAL
+        // bool — owned + used as primary 2 of last 5 years.
+        "section_121_exclusion_claimed_usd": null,
+        // CLASSIFICATION: CONDITIONAL
+        // Up to $250K single / $500K MFJ.
+
+        // ── §1031 Like-Kind Exchange (US investment property only) ──
+        "section_1031_exchange": null,
+        // CLASSIFICATION: CONDITIONAL
+        // bool. CRITICAL: §1031 does NOT apply to foreign property — cannot
+        // be used to defer Indian property gains (US-002 §9.1).
+
+        // ── Foreign property cross-flag ─────────────────────────────
+        "section_54_india_exempt_us_taxable": null,
+        // CLASSIFICATION: DERIVED
+        // DERIVED | bool
+        // True when country = "IN" AND layer1_india flagged this property
+        // with reinvestment_exemption_claimed IN ["s54","s54f"]. Surfaces the
+        // §54 trap: zero India tax = zero FTC = full US tax on the gain.
+
+        "fmv_at_inheritance_usd": null
+        // CLASSIFICATION: CONDITIONAL
+        // ENABLED IF: acquired by inheritance
+        // §1014 step-up basis (US side only). India side uses original owner cost.
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 11 — RETIREMENT ACCOUNTS (US-002 §8)
+  // Screen 3J
+  // ══════════════════════════════════════════════════════════════════════
+
+  "retirement_accounts": {
+
+    "traditional_ira_contribution_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "roth_ira_contribution_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // 2026 phase-out: $165K single / $246K MFJ. Above → backdoor Roth route.
+
+    "backdoor_roth_executed": null,                 // bool — pro-rata rule trap
+    // CLASSIFICATION: OPTIONAL
+
+    "401k_employee_contribution_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "401k_employer_match_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "roth_401k_contribution_usd": null,             // No RMD starting 2024 (SECURE 2.0)
+    // CLASSIFICATION: OPTIONAL
+
+    "hsa_contribution_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Triple tax advantage. 2026 limits per IRS Rev. Proc. 2025-32.
+    // Self-only HDHP coverage / Family coverage limits apply.
+
+    "solo_401k_contribution_usd": null,             // self-employed
+    // CLASSIFICATION: OPTIONAL
+    "sep_ira_contribution_usd": null,               // self-employed
+    // CLASSIFICATION: OPTIONAL
+
+    "rmd_required": null,                           // DERIVED — based on DOB + SECURE 2.0
+    // CLASSIFICATION: DERIVED
+    "rmd_amount_usd": null,                         // DERIVED
+    // CLASSIFICATION: DERIVED
+
+    // ── Indian retirement instruments — US treatment (§8.6) ──────────
+    "indian_epf_balance_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // EPF: not US-tax-deferred. Employer contributions = current W-2 income for USC/RA.
+    // Engine flags EPF_NO_US_DEFERRAL.
+
+    "indian_ppf_balance_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // PPF: arguably foreign grantor trust. Forms 3520 + 3520-A may be required.
+    // Engine surfaces PPF_GRANTOR_TRUST_REVIEW for CA sign-off.
+
+    "indian_nps_balance_usd": null
+    // CLASSIFICATION: OPTIONAL
+    // NPS: similar foreign-pension complications.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 12 — FOREIGN ENTITIES (US-002 §6.4)
+  // Screen 3K | Forms 5471, 8865 — heavy compliance penalties
+  // ══════════════════════════════════════════════════════════════════════
+
+  "foreign_entities": {
+
+    // ── Foreign Corporations — Form 5471 / GILTI (now NCTI under OBBBA) ──
+    "owns_10_percent_foreign_corp": null,
+    // CLASSIFICATION: REQUIRED
+    // bool — gate
+    // ≥10% ownership (vote or value) of a foreign corporation triggers Form 5471.
+    // For CFCs (>50% US-owned), §951A NCTI inclusion applies to USC/RA shareholders
+    // regardless of distribution. Per OBBBA (effective CFC tax years beginning after
+    // 31 Dec 2025): GILTI renamed NCTI; QBAI carve-out repealed; §250 deduction
+    // dropped to 40%; indirect FTC haircut reduced to 10%.
+
+    "foreign_corporations": [
+      {
+        "corp_name": null,
+        // CLASSIFICATION: CONDITIONAL
+        "country_of_incorporation": null,           // ISO 3166-1 alpha-2
+        // CLASSIFICATION: CONDITIONAL
+        "ownership_percent": null,                  // decimal e.g. 0.60
+        // CLASSIFICATION: CONDITIONAL
+        "is_cfc": null,                             // bool — >50% US-owned
+        // CLASSIFICATION: CONDITIONAL
+        "is_pfic_corp": null,                       // bool — PFIC at corp level
+        // CLASSIFICATION: CONDITIONAL
+
+        "category_5471": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "category_1" | "category_2" | "category_3" | "category_4" | "category_5"
+        // Determines which Form 5471 schedules are required.
+
+        "cfc_tax_year_start": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "YYYY-MM-DD"
+        // CRITICAL for OBBBA transition: a CFC whose tax year started before
+        // 1 Jan 2026 still applies pre-OBBBA GILTI rules for that year. Indian
+        // Pvt Ltd FY (Apr–Mar) means FY 2025-26 is still on old GILTI; FY 2026-27
+        // flips to NCTI.
+
+        "tested_income_usd": null,                  // for GILTI/NCTI inclusion
+        // CLASSIFICATION: CONDITIONAL
+        "tested_loss_usd": null,
+        // CLASSIFICATION: OPTIONAL
+        "subpart_f_income_usd": null,
+        // CLASSIFICATION: OPTIONAL
+
+        "section_962_election_made": null,
+        // CLASSIFICATION: OPTIONAL
+        // bool — per-year strategic election. Enables 40% §250 deduction and
+        // 90% indirect FTC at the cost of future-distribution taxation.
+
+        "high_tax_exception_elected": null,
+        // CLASSIFICATION: OPTIONAL
+        // bool — §951A(c)(2)(A)(i)(III). Country-by-country annual election that
+        // pulls income out of NCTI if foreign ETR ≥ 18.9% (90% of 21% US corp rate).
+        // Indian Pvt Ltds at 25.17% qualify cleanly.
+
+        "ptep_pool_pre_jun28_2025_usd": null,
+        // CLASSIFICATION: OPTIONAL
+        // Previously-Taxed E&P — pre-OBBBA pool (20% FTC haircut on distribution).
+
+        "ptep_pool_post_jun28_2025_usd": null
+        // CLASSIFICATION: OPTIONAL
+        // Previously-Taxed E&P — post-OBBBA pool (10% FTC haircut on distribution).
+      }
+    ],
+
+    // ── Foreign Partnerships — Form 8865 ─────────────────────────────
+    "owns_10_percent_foreign_partnership": null,
+    // CLASSIFICATION: REQUIRED
+    // bool — gate
+    // ≥10% interest in a foreign partnership triggers Form 8865.
+
+    "foreign_partnerships": [
+      {
+        "partnership_name": null,
+        // CLASSIFICATION: CONDITIONAL
+        "country": null,
+        // CLASSIFICATION: CONDITIONAL
+        "ownership_percent": null,
+        // CLASSIFICATION: CONDITIONAL
+        "category_8865": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "category_1" | "category_2" | "category_3" | "category_4"
+        "k1_income_usd": null
+        // CLASSIFICATION: CONDITIONAL
+      }
+    ],
+
+    // ── Foreign Disregarded Entities — Form 8858 ─────────────────────
+    "owns_foreign_disregarded_entity": null,        // bool — Form 8858
+    // CLASSIFICATION: REQUIRED
+    "foreign_de_details": []
+    // CLASSIFICATION: CONDITIONAL
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 13 — FOREIGN GIFTS & TRUSTS (US-002 §10, §6.4)
+  // Screen 3L | Form 3520 / 3520-A
+  // ══════════════════════════════════════════════════════════════════════
+
+  "foreign_gifts_and_trusts": {
+
+    "received_foreign_gifts_above_100k": null,
+    // CLASSIFICATION: REQUIRED
+    // bool — gate
+    // Form 3520 trigger: aggregate gifts from a foreign individual > $100,000
+    // in the calendar year. From foreign corporations/partnerships: > $19,570
+    // (2026, indexed). Penalty: 5% per month, max 25% of gift value.
+    //
+    // Practical: Indian parents gifting cash or Indian assets to a US child
+    // face NO US gift tax (NR alien donor of non-US-situs property), but the
+    // recipient must still file Form 3520 above the threshold.
+
+    "foreign_gifts": [
+      {
+        "donor_name": null,
+        // CLASSIFICATION: CONDITIONAL
+        "donor_relationship": null,                 // "parent" | "spouse" | "other"
+        // CLASSIFICATION: OPTIONAL
+        "donor_country": null,
+        // CLASSIFICATION: CONDITIONAL
+        "gift_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "gift_value_usd": null,
+        // CLASSIFICATION: CONDITIONAL
+        "gift_type": null                           // "cash" | "real_property" | "securities" | "other"
+        // CLASSIFICATION: OPTIONAL
+      }
+    ],
+
+    "is_us_beneficiary_of_foreign_trust": null,
+    // CLASSIFICATION: REQUIRED
+    // bool. Triggers Form 3520 (distributions) + Form 3520-A (annual info).
+
+    "foreign_trust_details": [],
+    // CLASSIFICATION: CONDITIONAL
+
+    // ── §2801 Covered Expatriate gifts/bequests ──────────────────────
+    "received_gift_from_covered_expatriate": null
+    // CLASSIFICATION: OPTIONAL
+    // bool. CRITICAL: US RECIPIENT pays 40% on gifts/bequests from covered
+    // expatriates — indefinitely after expatriation. Engine surfaces alert.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 14 — ITEMIZED DEDUCTIONS & CREDITS (US-002 §3A)
+  // Screen 3M | OBBBA 2026 thresholds
+  // ══════════════════════════════════════════════════════════════════════
+
+  "itemized_deductions_and_credits": {
+
+    "use_standard_or_itemized": null,
+    // CLASSIFICATION: OPTIONAL
+    // "standard" | "itemized" | "auto"
+    // Engine auto-selects whichever is larger if "auto".
+    // OBBBA 2026 standard deduction: Single $16,100 / MFJ $32,200 / HoH $24,150.
+    // 65+ adds OBBBA $6,000 senior deduction (phased out, NRA-ineligible).
+
+    // ── Schedule A items ─────────────────────────────────────────────
+    "state_and_local_taxes_paid_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // SALT cap raised by OBBBA from $10,000 to $40,400 for 2026. Phase-out
+    // begins above $500,500 MAGI; reverts to $10,000 in 2030.
+
+    "mortgage_interest_paid_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Cap: interest on $750K of acquisition debt (post-Dec 2017 mortgages).
+    // Pre-Dec 2017: grandfathered $1M cap.
+
+    "mortgage_acquisition_date": null,              // determines $750K vs $1M cap
+    // CLASSIFICATION: CONDITIONAL
+
+    "charitable_contributions_cash_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // 60% of AGI cap for cash to public charities.
+
+    "charitable_contributions_appreciated_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // 30% of AGI cap for appreciated property.
+
+    "medical_expenses_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Deductible above 7.5% of AGI threshold.
+
+    "casualty_loss_federal_disaster_usd": null,
+    // CLASSIFICATION: OPTIONAL
+
+    // ── Above-the-line ───────────────────────────────────────────────
+    "hsa_contributions_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Above-the-line; mirrors retirement_accounts.hsa_contribution_usd for
+    // deduction line vs contribution tracking.
+
+    "student_loan_interest_usd": null,              // up to $2,500, phase-out applies
+    // CLASSIFICATION: OPTIONAL
+    "educator_expenses_usd": null,                  // up to $300
+    // CLASSIFICATION: OPTIONAL
+
+    // ── Credits ──────────────────────────────────────────────────────
+    "child_tax_credit_dependents": null,
+    // CLASSIFICATION: OPTIONAL
+    // integer — qualifying children under 17 with SSN.
+    // OBBBA: CTC retained at $2,000/child (non-refundable + $1,700 refundable
+    // ACTC portion). Phase-out: $200K single / $400K MFJ.
+
+    "credit_for_other_dependents": null,            // $500 non-refundable
+    // CLASSIFICATION: OPTIONAL
+
+    "child_and_dependent_care_expenses_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "education_credits_aotc_usd": null,             // American Opportunity, $2,500 max
+    // CLASSIFICATION: OPTIONAL
+    "education_credits_llc_usd": null,              // Lifetime Learning, $2,000 max
+    // CLASSIFICATION: OPTIONAL
+
+    "saver_credit_eligible": null,                  // bool — low/middle income
+    // CLASSIFICATION: OPTIONAL
+
+    // ── 529 Plan (US-002 §3A.5) ──────────────────────────────────────
+    "funded_529_plan": null,                        // bool — gate
+    // CLASSIFICATION: OPTIONAL
+    "529_contributions_usd": null,
+    // CLASSIFICATION: CONDITIONAL
+    "529_state_deduction_state": null,
+    // CLASSIFICATION: CONDITIONAL
+    // 2-letter state — many states allow state-level deduction (NY $5K/$10K MFJ,
+    // VA $4K, IL $10K/$20K MFJ, etc.). No federal deduction.
+
+    // ── §199A QBI Deduction (US-002 §3A.6) ───────────────────────────
+    "qbi_deduction_eligible": null,                 // DERIVED from self_employment
+    // CLASSIFICATION: DERIVED
+    "qbi_deduction_usd": null                       // DERIVED
+    // CLASSIFICATION: DERIVED
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 15 — ALTERNATIVE MINIMUM TAX INPUTS (US-002 §4A)
+  // Screen 3N | Mostly DERIVED — most rows pulled from equity_compensation
+  // and itemized_deductions blocks. Surfaced here for the AMT engine contract.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "amt_inputs": {
+
+    "iso_preference_total_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | sum of equity_compensation.iso_exercises[].amt_preference_inr.
+    // The single biggest AMT trigger for tech employees.
+
+    "salt_addback_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | state_and_local_taxes_paid_usd (added back for AMT).
+
+    "private_activity_bond_interest_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Tax-exempt for regular tax; AMT preference item.
+
+    "amt_exemption_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | OBBBA 2026: phase-out threshold reset to 2018 levels with
+    // doubled phase-out rate. Engine reads OBBBA threshold table.
+
+    "amti_usd": null,                               // DERIVED — Alternative Minimum Taxable Income
+    // CLASSIFICATION: DERIVED
+    "tentative_minimum_tax_usd": null,              // DERIVED
+    // CLASSIFICATION: DERIVED
+    "amt_due_usd": null,                            // DERIVED — MAX(0, TMT − regular tax)
+    // CLASSIFICATION: DERIVED
+
+    "minimum_tax_credit_carryforward_usd": null
+    // CLASSIFICATION: OPTIONAL
+    // From prior years. Offsets future regular tax when regular > AMT.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 16 — NET INVESTMENT INCOME TAX (US-002 §3)
+  // Screen 3O | DERIVED only
+  // ══════════════════════════════════════════════════════════════════════
+
+  "niit_inputs": {
+
+    "modified_agi_usd": null,                       // DERIVED
+    // CLASSIFICATION: DERIVED
+
+    "niit_threshold_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | $200K single / $250K MFJ / $125K MFS. Not indexed for inflation.
+
+    "net_investment_income_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | interest + dividends + cg + rental + royalty − allocable expenses.
+    // Excludes wages, SE income, retirement distributions, active business income.
+
+    "niit_due_usd": null
+    // CLASSIFICATION: DERIVED
+    // DERIVED | 3.8% × MIN(net_investment_income_usd, MAGI − threshold).
+    // NRAs EXEMPT. No FTC offset against NIIT.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 17 — FOREIGN TAX CREDIT (US-002 §5)
+  // Screen 3P | ENABLED IF foreign-source income exists
+  // Form 1116 — per-basket limitation under §904.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "ftc_inputs": {
+
+    "claims_ftc": null,                             // bool — Form 1116
+    // CLASSIFICATION: OPTIONAL
+    "claims_ftc_simplified_under_300": null,
+    // CLASSIFICATION: OPTIONAL
+    // bool — § election for ≤ $300 ($600 MFJ) of foreign tax, all passive,
+    // reported on 1099-DIV/INT. Skip Form 1116 entirely.
+
+    // ── Per-basket rows (§904 basket system) ─────────────────────────
+    "ftc_baskets": [
+      {
+        "basket": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "passive" | "general" | "global_intangible_low_taxed_income"
+        // | "foreign_branch" | "treaty_resourced"
+        // Engine assigns basket from income_type per US-002 §0A.3.
+
+        "source_country": null,                     // ISO 3166-1 alpha-2
+        // CLASSIFICATION: CONDITIONAL
+
+        "foreign_source_income_usd": null,
+        // CLASSIFICATION: CONDITIONAL
+        "foreign_taxes_paid_usd": null,
+        // CLASSIFICATION: CONDITIONAL
+        // CRITICAL UI HINT: the frontend MUST explicitly prompt the user to
+        // include INDIAN SURCHARGE and HEALTH & EDUCATION CESS in this total,
+        // not just the base TDS line shown on Form 26AS. Surcharge (10%/15%/
+        // 25%/37% slab on tax) and cess (4% on tax + surcharge) are creditable
+        // foreign taxes under §901 — but ~70% of NRI users typing this field
+        // look at the base TDS column on 26AS and miss the add-ons, leaving
+        // material FTC unclaimed. Suggested microcopy:
+        //   "Enter the TOTAL Indian tax for this income — base tax + surcharge
+        //    + 4% Health & Education Cess. Check the 'Total Tax' column of
+        //    Form 26AS / your Indian ITR, not just the base TDS rate."
+        "ftc_limitation_usd": null,                 // DERIVED | basket income / total taxable × US tax
+        // CLASSIFICATION: DERIVED
+        "ftc_allowed_usd": null,                    // DERIVED | MIN(taxes paid, limitation)
+        // CLASSIFICATION: DERIVED
+        "ftc_carryback_1yr_usd": null,
+        // CLASSIFICATION: OPTIONAL
+        "ftc_carryforward_10yr_usd": null
+        // CLASSIFICATION: OPTIONAL
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 18 — WITHHOLDING & ESTIMATED TAX
+  // Screen 3Q | Always shown
+  // ══════════════════════════════════════════════════════════════════════
+
+  "withholding_and_estimated": {
+
+    "federal_withholding_total_usd": null,          // DERIVED — sum from W-2s + 1099s
+    // CLASSIFICATION: DERIVED
+    "state_withholding_total_usd": null,            // DERIVED
+    // CLASSIFICATION: DERIVED
+
+    "estimated_tax_q1_apr15_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "estimated_tax_q2_jun15_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "estimated_tax_q3_sep15_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    "estimated_tax_q4_jan15_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // Quarter-wise required for §6654 underpayment penalty computation.
+
+    "prior_year_total_tax_usd": null,
+    // CLASSIFICATION: OPTIONAL
+    // For safe harbor: pay 100% of prior-year tax (110% if AGI > $150K).
+
+    "additional_medicare_tax_owed_usd": null
+    // CLASSIFICATION: DERIVED
+    // DERIVED | 0.9% on wages/SE > $200K single / $250K MFJ. Employer does
+    // not match the additional 0.9%. No FTC offset.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 19 — NRA-SPECIFIC (US-002 §19, §6.2A)
+  // Screen 3R | ENABLED IF: lock = "NON_RESIDENT_ALIEN"
+  // Form 1040-NR. US-source ECI + FDAP only.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "nra_specific": {
+
+    "files_form_1040nr": null,                      // bool
+    // CLASSIFICATION: CONDITIONAL
+
+    // ── W-8BEN STATUS — see bank_accounts[] and financial_holdings[] ─
+    // W-8BEN is filed PER WITHHOLDING AGENT (broker, bank, payor) and lives
+    // on each account/holding row. This block previously held global w8ben_filed
+    // and w8ben_expiry_date fields — they were removed because a single global
+    // flag silently mis-states withholding status when the user has accounts at
+    // multiple brokers (typical case). The engine aggregates per-broker status
+    // from the per-row fields and surfaces a consolidated view at runtime.
+
+    "w8ben_aggregate_status": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | "all_filed" | "partial" | "none" | "expired"
+    // Engine computes by scanning bank_accounts[] and financial_holdings[]
+    // where lock = "NON_RESIDENT_ALIEN". "partial" or "expired" → alert fires
+    // identifying the specific brokers needing action.
+
+    // ── ITIN (US-002 §17, Fix #13) ───────────────────────────────────
+    "form_w7_itin_application_filed": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool — required for NRAs without SSN before any 1040-NR can be processed.
+
+    // ── ECI vs FDAP (US-002 §19.2) — DERIVED, NOT USER INPUT ─────────
+    // Both fields below are computed by the Layer 2 engine from the income
+    // rows in income_us_source (Section 4). The engine classifies each W-2,
+    // 1099-NEC, 1099-INT, 1099-DIV, 1099-MISC, K-1, and rental row by:
+    //   - source (US-source only — foreign-source rows are excluded for NRAs)
+    //   - effectively-connected status (W-2 wages and 1099-NEC SE income are
+    //     ECI by default; 1099-INT/DIV/royalty/rent are FDAP unless the user
+    //     has a US trade or business those payments are connected to)
+    //   - treaty re-sourcing (W-8BEN-claimed treaty rates apply per-payor
+    //     using the per-row w8ben_filed_with_this_payor flag)
+    // Asking the user to manually re-aggregate Section 4 inputs into these
+    // two buckets is a double-counting trap and an invitation to misclassify
+    // dividends as ECI. The classification belongs in Layer 2, not in the
+    // user's head.
+
+    "us_eci_income_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | USD
+    // Effectively Connected Income — US trade/business income, taxed at
+    // graduated rates with allowed deductions. Reported on 1040-NR p.1.
+    // Auto-summed from Section 4 wages_w2[] (where employer is US) and
+    // self_employment (where US-source) plus US rental rows where the
+    // user is materially participating.
+
+    "us_fdap_income_usd": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | USD
+    // Fixed/Determinable/Annual/Periodic — passive US-source income (interest,
+    // dividends, royalties, non-ECI rents). Flat 30% withholding or treaty rate.
+    // Reported on 1040-NR Schedule NEC. Auto-summed from Section 4
+    // interest_us_source_usd, ordinary_dividends_us_source_usd, royalty_income,
+    // and non-ECI rental rows. Treaty rate applied per-payor from W-8BEN status.
+
+    "us_real_property_disposed": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool — FIRPTA: 15% withholding on gross sale price by buyer (Form 8288).
+    "firpta_withholding_usd": null,
+    // CLASSIFICATION: CONDITIONAL
+
+    // ── LRS investor sub-case (US-002 §19.1, §19.3) ──────────────────
+    "is_lrs_investor": null
+    // CLASSIFICATION: CONDITIONAL
+    // bool — Indian resident investing in US markets via RBI's LRS scheme.
+    // Engine surfaces FDAP withholding rules; this user does NOT file 1040,
+    // only suffers withholding at source.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 20 — METADATA
+  // Auto-populated by the system. No user input.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "metadata": {
+
+    "us_calendar_year": null,                       // DERIVED e.g. 2026
+    // CLASSIFICATION: DERIVED
+    "request_id": null,                             // DERIVED UUID
+    // CLASSIFICATION: DERIVED
+    "source": null,
+    // CLASSIFICATION: DERIVED
+    // "onboarding" | "annual_update" | "transaction_trigger" | "ca_review"
+    "input_completeness": null,                     // "provisional" | "complete"
+    // CLASSIFICATION: DERIVED
+    "schema_version": "layer1_us_v1",
+    // CLASSIFICATION: DERIVED
+    "obbba_threshold_table_version": "rev_proc_2025_32",
+    // CLASSIFICATION: DERIVED
+    // Pins the inflation-adjusted threshold table the engine uses for this row.
+    "created_at": null,                             // ISO 8601
+    // CLASSIFICATION: DERIVED
+    "last_updated_at": null
+    // CLASSIFICATION: DERIVED
+  }
+}

@@ -1,0 +1,2230 @@
+ /**
+ * WISING TAX ENGINE — LAYER 1: INDIA SPECIALIST
+ * Version 5.1 | April 2026
+ *
+ * PURPOSE
+ * ───────────────────────────────────────────────────────────────────────
+ * Collects all India-specific tax data after Layer 0 routes the user to
+ * `india_only` or `dual`. This module is the single source of truth for
+ * Indian residency classification, GTI assembly, and ITR data inputs.
+ *
+ * SCOPE CONTAINMENT
+ * ───────────────────────────────────────────────────────────────────────
+ * This file contains INDIA TAX LAW ONLY. All US-side concerns (PFIC, FBAR,
+ * Form 8938, GILTI/NCTI, §1014 step-up basis, treaty tie-breaker cascade,
+ * Closer Connection, W-Forms, FATCA, §962 election) are out of scope and
+ * live in the future layer1_us module.
+ *
+ * THE RESIDENCY LOCK
+ * ───────────────────────────────────────────────────────────────────────
+ * The very first thing this module does is run the RS-001 logic and write
+ * `residency_detail.final_india_residency_status`. This DERIVED field is
+ * the LOCK that gates every subsequent section (DTAA, LRS, deductions
+ * eligibility, scope of income). No section downstream of the lock may
+ * be filled until the lock is set.
+ *
+ * v5.1 CHANGE LOG
+ * ───────────────────────────────────────────────────────────────────────
+ * 1. BUG FIX: `presumptive_scheme` converted from single enum to array of
+ *    enum. DOM_Tax_03 §4.2 explicitly permits simultaneous election of
+ *    s.44AE (transport) + s.44AD (other business) for the same taxpayer.
+ *    Single-enum forced misrepresentation. Empty array = "none" (regular
+ *    computation path).
+ *
+ * 2. BUG FIX: `nature_of_business` converted from single enum to array of
+ *    enum. Real users routinely hold multiple classifications simultaneously
+ *    (professional consulting + F&O + intraday). Single-enum broke the
+ *    Reactive Re-evaluation architecture when new income streams were added
+ *    mid-session.
+ *
+ * 3. NORMALIZED `goods_vehicles[]` template. Sub-fields `vehicle_type`,
+ *    `gvw_tonnes`, `months_owned` are now formally declared as template
+ *    object members, consistent with `asset_blocks[]` and `msme_payables[]`.
+ *    Previously documented only as inline comments — not machine-parseable.
+ *
+ * 4. ADDED NR-scope gate to presumptive_scheme (commented). s.44AD and
+ *    s.44ADA require resident assessee (lock IN ["ROR","RNOR"]); s.44AE has
+ *    no residency restriction. Engine rejects NR users electing s.44AD or
+ *    s.44ADA with NR_INELIGIBLE_PRESUMPTIVE flag.
+ *
+ * 5. NEW FIELDS (20 additions, +8 CONDITIONAL +12 OPTIONAL):
+ *
+ *    Opening / Closing Stock (DOM_Tax_03 §11.3) — inventory businesses
+ *      - `opening_stock_inr`, `closing_stock_inr` (CONDITIONAL)
+ *
+ *    TDS Default Disallowances (DOM_Tax_03 §9.2)
+ *      - `expenses.payments_to_non_residents_no_tds_inr` — s.40(a)(i),
+ *        100% disallowed
+ *      - `expenses.payments_to_residents_no_tds_inr` — s.40(a)(ia),
+ *        30% disallowed
+ *
+ *    Scientific Research (DOM_Tax_03 §7.5) — post-FA-2023 flat 100%
+ *      - `expenses.s35_own_revenue_research_inr` (s.35(1)(i))
+ *      - `expenses.s35_own_capital_research_inr` (s.35(2))
+ *      - `expenses.s35_donation_to_approved_body_inr` (s.35(1)(ii)/(2AA))
+ *
+ *    Preliminary Expenses Amortisation (DOM_Tax_03 §7.6)
+ *      - `expenses.s35D_total_preliminary_expenses_inr` — 1/5th over 5 AYs
+ *      - `expenses.s35D_year_of_commencement` (CONDITIONAL)
+ *
+ *    VRS Amortisation (DOM_Tax_03 §7.7)
+ *      - `expenses.s35DDA_vrs_payments_inr` — 1/5th over 5 AYs
+ *      - `expenses.s35DDA_first_year_of_payment` (CONDITIONAL)
+ *
+ *    STT / CTT Audit Trail (DOM_Tax_03 §6.3) — NOT deductible, recorded
+ *    for reconciliation
+ *      - `expenses.stt_paid_inr`, `expenses.ctt_paid_inr`
+ *
+ *    Deemed Business Income (DOM_Tax_03 §11.1)
+ *      - `s41_remission_income_inr` — s.41(1) liability cessation
+ *      - `s41_bad_debt_recovery_inr` — s.41(4) recovery of prior write-off
+ *
+ *    AMT Credit Brought Forward (DOM_Tax_03 §13, s.115JC)
+ *      - `amt_credit_bf_inr` — 15-year carry forward
+ *      - `amt_credit_bf_origin_ay` (CONDITIONAL) — drives expiry computation
+ *
+ * 6. NO CHANGES to any other section (profile, residency_detail, dtaa,
+ *    compliance_docs, bank_accounts, nro_repatriation, property,
+ *    financial_holdings, commodities, unlisted_equity, share_buyback,
+ *    other_sources, deductions, carry_forward_losses, lrs_outbound,
+ *    tax_credits, surcharge_buckets, metadata except schema_version tag).
+ *
+ * v5.0 CHANGE LOG
+ * ───────────────────────────────────────────────────────────────────────
+ * 1. EXPANDED `business_income` block to support DOM_Tax_03 v2.0:
+ *    - ADDED `nature_of_business`, `profession_type` for classification.
+ *    - ADDED `digital_receipts_inr`, `cash_receipts_inr` for s.44AD
+ *      blended rate computation (6% digital / 8% cash).
+ *    - ADDED `s44AD_last_exit_ay`, `s44AD_opted_current_year` for
+ *      5-year re-entry ban enforcement under s.44AD(4).
+ *    - ADDED `goods_vehicles` array for s.44AE per-vehicle computation.
+ *    - ADDED `gst_registration_status`, `gst_collected_inr` for correct
+ *      taxable turnover derivation (GST collected is liability, not income).
+ *    - REPLACED single `expenses_inr` with structured `expenses` sub-block
+ *      covering s.30–s.37 categories, s.40A(3) cash disallowance,
+ *      s.40A(2) related party flagging, and s.43B actual payment rule.
+ *    - REPLACED single `depreciation_inr` with `asset_blocks` array for
+ *      WDV block-wise computation, half-year rule, additional depreciation
+ *      s.32(1)(iia), and s.32AD backward area allowance.
+ *    - ADDED `speculative_turnover_inr` for intraday s.44AB audit gate
+ *      (sum of abs(individual trade P&L), not net position).
+ *    - ADDED `partner_income` sub-block for firm/LLP partner taxation,
+ *      distinguishing entity_type for s.40(b) deductibility limits.
+ *    - ADDED `msme_payables` array for s.43B(h) (Finance Act 2023)
+ *      disallowance of overdue payments to micro/small enterprises.
+ *
+ * 2. NO CHANGES to any other section (profile, residency_detail, dtaa,
+ *    compliance_docs, bank_accounts, nro_repatriation, property,
+ *    financial_holdings, commodities, unlisted_equity, share_buyback,
+ *    other_sources, deductions, carry_forward_losses, lrs_outbound,
+ *    tax_credits, surcharge_buckets, metadata).
+ *
+ * v4.0 CHANGE LOG
+ * ───────────────────────────────────────────────────────────────────────
+ * 1. REMOVED `india_source_income_exact_inr` — replaced with boolean
+ *    `india_source_income_above_15l`. The exact income amount is not
+ *    needed to set the residency lock; a boolean unblocks the lock
+ *    without forcing premature income math.
+ *
+ * 2. ADDED `came_on_visit_to_india_pio_oci_citizen` — new boolean that
+ *    distinguishes the 120-day Condition C visitor path from the
+ *    standard 60-day path. Enabled only when employment_or_crew_status
+ *    = "none" (visitors, not departing employees).
+ *
+ * 3. ADDED DERIVED `liable_to_tax_in_another_country_being_indian_citizen`
+ *    — composite boolean that combines two Layer 0 pre-fills. TRUE only
+ *    when is_indian_citizen = true AND liable_to_tax_in_another_country
+ *    = true. This is the Deemed Resident blocker per s.6(1A).
+ *
+ * 4. ALL ENABLED IF gates updated to match the exhaustive boolean logic
+ *    matrix from the India Residency (Tax Engine Logic) document.
+ *
+ * 5. Lock derivation cascade completely rewritten with the exhaustive
+ *    ROR (2 paths), RNOR (9 paths), NR (8 paths) matrix.
+ *
+ * 6. `employment_or_crew_status` gate tightened: now requires
+ *    days >= 60 AND < 182 AND preceding_4yr >= 365 AND indian_citizen,
+ *    not just Layer 0 left_india_for_employment = true.
+ *
+ * 7. `nr_years_last_10_gte_9` and `days_in_india_last_7_years_lte_729`
+ *    gates updated: now enabled if days >= 182 OR
+ *    came_on_visit_to_india_pio_oci_citizen = false (per document).
+ *
+ * UNLOCK LOGIC (enforced by frontend + backend)
+ * ───────────────────────────────────────────────────────────────────────
+ * Active when: tax_years.jurisdiction IN ("india_only", "dual")
+ *
+ *   Screen 2A → profile + residency_detail   (always shown; sets the LOCK)
+ *   Screen 2B → dtaa                         (ENABLED IF lock = "NR")
+ *   Screen 2C → compliance_docs              (ENABLED IF dtaa.tax_residency_country is set)
+ *   Screen 2D → bank_accounts                (ENABLED IF lock IN ["NR","RNOR","ROR"])
+ *   Screen 2E → property                     (ENABLED IF property.has_indian_property_transaction = true)
+ *   Screen 2F → financial_holdings           (always shown)
+ *   Screen 2G → commodities                  (always shown, gated by has_commodity_transactions)
+ *   Screen 2H → unlisted_equity              (always shown, gated)
+ *   Screen 2I → share_buyback                (always shown, gated)
+ *   Screen 2J → domestic_income              (always shown)
+ *   Screen 2K → other_sources                (always shown, sub-fields gated)
+ *   Screen 2L → deductions                   (ENABLED IF profile.tax_regime = "OLD"
+ *                                              OR lock IN ["RNOR","ROR"] for auto-comparison)
+ *   Screen 2M → carry_forward_losses         (always shown, gated)
+ *   Screen 2N → lrs_outbound                 (ENABLED IF lock = "ROR")
+ *   Screen 2O → tax_credits                  (always shown, progressive)
+ *
+ * CONVENTIONS
+ * ───────────────────────────────────────────────────────────────────────
+ * "ENABLED IF"  → conditional field/section (frontend hides; backend validates)
+ * "DERIVED"     → engine-computed; never asked of user
+ * "PRE-FILLED"  → carried from Layer 0; user is not re-asked
+ * "PROGRESSIVE" → collected after onboarding, before final ITR computation
+ * Amounts       → INR whole units unless paired *_currency field says otherwise
+ * Dates         → "YYYY-MM-DD"
+ * Ratios        → decimal (0.10 = 10%)
+ */
+{
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 1 — PROFILE
+  // Screen 2A | Asked of all India users
+  // ══════════════════════════════════════════════════════════════════════
+
+  "profile": {
+
+    "date_of_birth": null,
+    // CLASSIFICATION: REQUIRED
+    // "YYYY-MM-DD"
+    // Determines: senior citizen (60+) higher basic exemption under old regime,
+    // super senior (80+) advance tax exemption, slab breakpoints.
+
+    "pan": null,
+    // CLASSIFICATION: REQUIRED
+    // string (10 chars, AAAAA9999A format)
+    // Permanent Account Number. Required for all India tax filings.
+
+    "pan_aadhaar_linked": null,
+    // CLASSIFICATION: REQUIRED
+    // bool
+    // Is your PAN linked to Aadhaar?
+    // CRITICAL: an unlinked PAN is INOPERATIVE — TDS doubles to 20% on most
+    // streams under s.206AA, refunds are blocked, and ITR filing may be rejected.
+    // Engine fires PAN_INOPERATIVE_ALERT if false and applies the doubled-TDS
+    // assumption to all credit reconciliation.
+    // NRIs: exempt from Aadhaar requirement; engine treats null as "exempt" if
+    // residency lock = "NR".
+
+    "tax_regime": null
+    // CLASSIFICATION: OPTIONAL
+    // "NEW" | "OLD" | null
+    // DEFAULT for NRIs: "NEW". OLD is not legally blocked for NRIs.
+    // RNOR / ROR → if null, engine auto-computes BOTH regimes and surfaces
+    //              the lower liability. Requires `deductions` block to be filled.
+    // NR         → defaults to "NEW" if null. Engine recomputes both on override.
+    // Validation: business/professional income with prior s.115BAC(6) opt-out
+    // is the only hard block (handled by DOM-03 inputs in `business_income`).
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 2 — RESIDENCY DETAIL  +  THE LOCK
+  // Screen 2A continued | Asked of all India users
+  // Runs the RS-001 engine and writes the LOCK.
+  //
+  // SOURCE OF TRUTH: "India Residency (Tax Engine Logic).docx"
+  // All input fields, ENABLED IF gates, and the lock derivation cascade
+  // below are a direct translation of that document's boolean matrix.
+  //
+  // FIELD EVALUATION ORDER (frontend must respect this sequence):
+  //   1. days_in_india_current_year (pre-filled from Layer 0)
+  //   2. days_in_india_preceding_4_years_gte_365 (if days 60–181)
+  //   3. employment_or_crew_status (if days 60–181 + preceding_4yr + Indian citizen)
+  //   4. is_departure_year, ship_nationality (if employment/crew active)
+  //   5. came_on_visit_to_india_pio_oci_citizen (if employment = none)
+  //   6. nr_years_last_10_gte_9 (if days >=182 OR came_on_visit = false)
+  //   7. days_in_india_last_7_years_lte_729 (same gate as above)
+  //   8. india_source_income_above_15l (if Layer 0 has_india_source_income = true)
+  //   9. liable_to_tax_in_another_country_being_indian_citizen (DERIVED)
+  //  10. final_india_residency_status (THE LOCK — DERIVED)
+  // ══════════════════════════════════════════════════════════════════════
+
+  "residency_detail": {
+
+    // ── 1. Core day count (pre-filled from Layer 0) ───────────────────
+    "days_in_india_current_year": null,
+    // CLASSIFICATION: REQUIRED
+    // integer (0–366)
+    // PRE-FILLED from Layer 0 india_days.
+    // Exact total days physically present in India this FY (1 Apr 2025 – 31 Mar 2026).
+    // Both arrival day and departure day count.
+    // Overridden by trip_log computation once log is populated.
+
+    // ── 2. Preceding 4-year day total ─────────────────────────────────
+    "days_in_india_preceding_4_years_gte_365": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: days_in_india_current_year >= 60 AND days_in_india_current_year < 182
+    //
+    // Across the 4 preceding FYs combined (FY 2021-22 through FY 2024-25),
+    // were you in India for 365 days or more in total?
+    //
+    // This is the Branch 2 prerequisite. If false AND days < 182, the 60-day
+    // path does NOT trigger residency — the person falls through to the
+    // Deemed Resident check or NR.
+
+    // ── 3. Employment / crew detail ───────────────────────────────────
+    "employment_or_crew_status": null,
+    // CLASSIFICATION: CONDITIONAL
+    // "employed_abroad" | "indian_ship_crew" | "foreign_ship_crew" | "none"
+    //
+    // ENABLED IF: ALL of the following are true:
+    //   Layer 0 left_india_for_employment_this_year = true
+    //   AND days_in_india_current_year >= 60
+    //   AND days_in_india_current_year < 182
+    //   AND days_in_india_preceding_4_years_gte_365 = true
+    //   AND Layer 0 is_indian_citizen = true
+    //
+    // Gate rationale: the employment-departure exception (s.6(1) Explanation 1)
+    // only applies to Indian citizens in the 60–181 day band who meet the
+    // preceding-4-year test. If ANY gate condition fails, this field is hidden
+    // and treated as "none" for lock derivation.
+    //
+    // Foreign ship crew: NOT covered by the employment exception (only Indian
+    // ship crew under s.6(1)(c)).
+
+    // ── 4. Departure year + ship nationality ──────────────────────────
+    "is_departure_year": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: employment_or_crew_status NOT IN ["none", null]
+    // First FY this person left India for this employment/crew role?
+    // Per Binny Bansal [2026]: exception applies only in the departure year.
+    // Engine auto-resets this flag every 1 April.
+
+    "ship_nationality": null,
+    // CLASSIFICATION: CONDITIONAL
+    // "indian" | "foreign"
+    // ENABLED IF: employment_or_crew_status IN ["indian_ship_crew", "foreign_ship_crew"]
+
+    // ── 5. Visitor flag (NEW in v4.0) ─────────────────────────────────
+    "came_on_visit_to_india_pio_citizen": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: employment_or_crew_status = "none"
+    //             (i.e., the person is in the 60–181 + preceding_4yr >= 365
+    //              path but is NOT leaving for employment)
+    //
+    // NOTE: if employment_or_crew_status was never shown (because the
+    // employment gate conditions failed), this field is also NOT shown.
+    // It is only relevant in the sub-tree where the person is in the
+    // 60–181 band, has >= 365 preceding days, and is NOT an employee/crew.
+    //
+    // "Did you come to India on a visit, being a PIO or an Indian citizen?"
+    //
+    // If true → the person is on the Condition C (120-day visitor) path.
+    //   Engine checks days >= 120 for s.6(6)(c) RNOR.
+    // If false → the person is on the standard 60-day path.
+    //   Engine checks Condition A (NR 9/10) and Condition B (< 729 days)
+    //   for RNOR vs ROR.
+
+    // ── 6. Historical travel — RNOR Condition A ───────────────────────
+    "nr_years_last_10_gte_9": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: days_in_india_current_year >= 182
+    //             OR came_on_visit_to_india_pio_oci_citizen = false
+    //
+    // Of the last 10 FYs (FY 2015-16 through FY 2024-25), were you NR for
+    // 9 or more of those years?
+    // RNOR years count as NR for this test (RS-001 CA sign-off Item 1).
+    // Condition A gate for RNOR under s.6(6)(a).
+    //
+    // Gate rationale: this question is asked in exactly two scenarios:
+    //   (a) days >= 182 → person is RESIDENT via Branch 1; need Condition A/B
+    //       to determine RNOR vs ROR.
+    //   (b) came_on_visit = false → person is RESIDENT via the standard 60-day
+    //       path (not a visitor); need Condition A/B to determine RNOR vs ROR.
+    // In all other paths (visitor, deemed resident, NR), this field is not needed.
+
+    // ── 7. Historical travel — RNOR Condition B ───────────────────────
+    "days_in_india_last_7_years_lte_729": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: days_in_india_current_year >= 182
+    //             OR came_on_visit_to_india_pio_oci_citizen = false
+    //
+    // Across the 7 preceding FYs combined, were you in India for 729 days or fewer?
+    // Threshold is "<= 729" inclusive per statutory "or less" language
+    // (RS-001 CA sign-off Item 15).
+    // Condition B gate for RNOR under s.6(6)(a).
+    //
+    // Same gate rationale as nr_years_last_10_gte_9.
+
+    // ── 8. India-source income ₹15L gate (s.6(1A) Deemed Resident) ───
+    "india_source_income_above_15l": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: Layer 0 has_india_source_income_or_assets = true
+    //
+    // Is your India-source income (excluding foreign earnings) above ₹15 lakh
+    // this tax year?
+    //
+    // This is the s.6(1A) Deemed Resident threshold. If true AND the person is
+    // an Indian citizen AND NOT liable to tax in another country → the person
+    // becomes a Deemed Resident (always RNOR per s.6(6)(d)).
+    //
+    // NOTE: replaces the old `india_source_income_exact_inr` field. A boolean
+    // is sufficient to set the residency lock; exact income computation happens
+    // later in the income sections.
+
+    // ── 9. Trip log (audit trail) ─────────────────────────────────────
+    "current_year_trip_log": [],
+    // CLASSIFICATION: OPTIONAL
+    // Array of trip objects: [{ "arrival_date": "YYYY-MM-DD", "departure_date": "YYYY-MM-DD" }]
+    // Days per trip = (departure_date − arrival_date + 1). Both days count.
+    // When populated, overrides days_in_india_current_year for authoritative count.
+
+    // ═══════════════════════════════════════════════════════════════════
+    // DERIVED FIELDS (engine-computed, never asked of user)
+    // ═══════════════════════════════════════════════════════════════════
+
+    "liable_to_tax_in_another_country_being_indian_citizen": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | bool
+    //
+    // Composite boolean derived from two Layer 0 pre-fills:
+    //   Layer 0 is_indian_citizen = true AND Layer 0 liable_to_tax_in_another_country = true
+    //     → TRUE
+    //   ALL other combinations → FALSE
+    //     (citizen=false, liable=true → FALSE)
+    //     (citizen=true,  liable=false → FALSE)
+    //     (citizen=false, liable=false → FALSE)
+    //
+    // This is the s.6(1A) Deemed Resident BLOCKER. When TRUE, the person
+    // is an Indian citizen who IS liable to tax elsewhere — the Deemed
+    // Resident provision is blocked, and the person remains NR (if they
+    // don't qualify via the 182-day or 60-day paths).
+    //
+    // When FALSE, the Deemed Resident path is OPEN (subject to income > ₹15L).
+    //
+    // TRUTH TABLE (from source document):
+    // ┌───────────────────┬──────────────────────────┬──────────┐
+    // │ is_indian_citizen  │ liable_to_tax_elsewhere  │ Result   │
+    // ├───────────────────┼──────────────────────────┼──────────┤
+    // │ true               │ true                     │ TRUE     │
+    // │ false              │ true                     │ FALSE    │
+    // │ true               │ false                    │ FALSE    │
+    // │ false              │ false                    │ FALSE    │
+    // └───────────────────┴──────────────────────────┴──────────┘
+
+    // ═══════════════════════════════════════════════════════════════════
+    // THE LOCK
+    // ═══════════════════════════════════════════════════════════════════
+
+    "final_india_residency_status": null
+    // CLASSIFICATION: DERIVED
+    // DERIVED | "NR" | "RNOR" | "ROR"
+    // The LOCK. Computed by the RS-001 engine immediately after the questions
+    // above are answered. NEVER asked of the user.
+    //
+    // ALL DOWNSTREAM SECTION GATES READ THIS FIELD. The lock must be set
+    // before the frontend reveals any further screens.
+    //
+    // ═══════════════════════════════════════════════════════════════════
+    // EXHAUSTIVE DERIVATION CASCADE
+    // Source: "India Residency (Tax Engine Logic).docx" — direct translation
+    //
+    // Abbreviations used below:
+    //   DAYS     = days_in_india_current_year
+    //   P4Y_365  = days_in_india_preceding_4_years_gte_365
+    //   EMP      = employment_or_crew_status
+    //   VISIT    = came_on_visit_to_india_pio_oci_citizen
+    //   NR9      = nr_years_last_10_gte_9
+    //   D7_729   = days_in_india_last_7_years_lte_729
+    //   INC_15L  = india_source_income_above_15l
+    //   LTAC     = liable_to_tax_in_another_country_being_indian_citizen
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // ─── ROR (2 paths) ───────────────────────────────────────────────
+    //
+    //   ROR-1: DAYS >= 182
+    //          AND NR9 = false
+    //          AND D7_729 = false
+    //
+    //   ROR-2: DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = "none"
+    //          AND VISIT = false
+    //          AND NR9 = false
+    //          AND D7_729 = false
+    //
+    // ─── RNOR (9 paths) ──────────────────────────────────────────────
+    //
+    //   RNOR-1 (Condition A via 182-day):
+    //          DAYS >= 182
+    //          AND NR9 = true
+    //
+    //   RNOR-2 (Condition B via 182-day):
+    //          DAYS >= 182
+    //          AND D7_729 = true
+    //
+    //   RNOR-3 (Employment departure + Deemed Resident):
+    //          DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = any value (not "none")
+    //          AND INC_15L = true
+    //          AND LTAC = false
+    //
+    //   RNOR-4 (Visitor 120-day — Condition C):
+    //          DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = "none"
+    //          AND VISIT = true
+    //          AND DAYS >= 120 AND DAYS < 182
+    //          AND INC_15L = true
+    //
+    //   RNOR-5 (Non-visitor, Condition A via 60-day):
+    //          DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = "none"
+    //          AND VISIT = false
+    //          AND NR9 = true
+    //
+    //   RNOR-6 (Non-visitor, Condition B via 60-day):
+    //          DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = "none"
+    //          AND VISIT = false
+    //          AND D7_729 = true
+    //
+    //   RNOR-7 (Deemed Resident — days < 60):
+    //          DAYS < 60
+    //          AND INC_15L = true
+    //          AND LTAC = false
+    //
+    //   RNOR-8 (Deemed Resident — 60–181, preceding 4yr < 365):
+    //          DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = false
+    //          AND INC_15L = true
+    //          AND LTAC = false
+    //
+    //   RNOR-9 (Visitor < 120 days + Deemed Resident):
+    //          DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = "none"
+    //          AND VISIT = true
+    //          AND DAYS < 120
+    //          AND INC_15L = true
+    //          AND LTAC = false
+    //
+    // ─── NR (8 paths) ────────────────────────────────────────────────
+    //
+    //   NR-1:  DAYS < 60
+    //          AND INC_15L = true
+    //          AND LTAC = true
+    //          (Deemed Resident blocked: Indian citizen liable elsewhere)
+    //
+    //   NR-2:  DAYS < 60
+    //          AND INC_15L = false
+    //          (No income threshold met; no path to residency)
+    //
+    //   NR-3:  DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = false
+    //          AND INC_15L = true
+    //          AND LTAC = true
+    //          (60-day path fails, Deemed Resident blocked)
+    //
+    //   NR-4:  DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = false
+    //          AND INC_15L = false
+    //          (60-day path fails, no Deemed Resident)
+    //
+    //   NR-5:  DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = "none"
+    //          AND VISIT = true
+    //          AND DAYS >= 120 AND DAYS < 182
+    //          AND INC_15L = false
+    //          (Visitor 120-day path: meets days but income <= 15L)
+    //
+    //   NR-6:  DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = "none"
+    //          AND VISIT = true
+    //          AND DAYS < 120
+    //          AND INC_15L = true
+    //          AND LTAC = true
+    //          (Visitor < 120 days, Deemed Resident blocked)
+    //
+    //   NR-7:  DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = any value (not "none")
+    //          AND INC_15L = false
+    //          (Employment departure, income <= 15L → no Deemed Resident)
+    //
+    //   NR-8:  DAYS >= 60 AND DAYS < 182
+    //          AND P4Y_365 = true
+    //          AND EMP = any value (not "none")
+    //          AND INC_15L = true
+    //          AND LTAC = true
+    //          (Employment departure, income > 15L but Deemed Resident blocked)
+    //
+    // ─── ENGINE IMPLEMENTATION NOTES ─────────────────────────────────
+    //
+    // 1. Evaluate top-down: DAYS >= 182 first, then DAYS 60–181 sub-tree,
+    //    then DAYS < 60 sub-tree.
+    //
+    // 2. Within the 60–181 sub-tree, the FIRST fork is P4Y_365.
+    //    If P4Y_365 = false → skip directly to Deemed Resident check
+    //    (RNOR-8 if INC_15L + !LTAC, else NR-3 or NR-4).
+    //
+    // 3. If P4Y_365 = true → fork on EMP:
+    //    EMP != "none" → employment path (RNOR-3 or NR-7/NR-8)
+    //    EMP = "none"  → fork on VISIT:
+    //      VISIT = true  → visitor path (RNOR-4, RNOR-9, NR-5, NR-6)
+    //      VISIT = false → standard path (ROR-2, RNOR-5, RNOR-6)
+    //
+    // 4. Deemed Resident paths (RNOR-3, RNOR-7, RNOR-8, RNOR-9) are
+    //    ALWAYS RNOR (never ROR) per s.6(6)(d). The Condition A/B check
+    //    is NOT applied to Deemed Residents.
+    //
+    // 5. RNOR-1 and RNOR-2 are NOT mutually exclusive. A person with
+    //    days >= 182 AND NR9 = true AND D7_729 = true matches BOTH.
+    //    The result is the same (RNOR), so no conflict.
+    //
+    // 6. The employment_or_crew_status field may be null/hidden when the
+    //    gate conditions don't fire. In that case, treat as "none" for
+    //    lock derivation. Same for came_on_visit_to_india_pio_oci_citizen.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 3 — DTAA INPUT
+  // Screen 2B | ENABLED IF: residency_detail.final_india_residency_status = "NR"
+  // ══════════════════════════════════════════════════════════════════════
+
+  "dtaa": {
+
+    "tax_residency_country": null,
+    // CLASSIFICATION: CONDITIONAL
+    // ISO 3166-1 alpha-2 e.g. "US" | "AE" | "GB" | "SG" | "CA"
+    // Country where you currently pay personal income tax (your tax home).
+    // Drives the entire treaty rate table.
+
+    "is_us_resident_for_dtaa": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // ENABLED IF: tax_residency_country = "US"
+    // Triggers the Savings Clause alert (DTAA Art.1(3)) — Form 67 required to
+    // claim FTC for US taxes paid. Alert-only; does not block treaty benefit.
+    // NOTE: detailed US residency classification lives in layer1_us.
+
+    "trc_status": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // Do you have a valid Tax Residency Certificate (TRC) from your country of residence?
+    // Without TRC → domestic rates apply (e.g. 30% NRO interest vs 10–15% treaty rate).
+
+    "has_permanent_establishment_in_india": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool
+    // Do you have a fixed place of business, office, or dependent agent in India?
+    // If true → DUAL_RESIDENCY_REVIEW flag fires; PE income taxable in India regardless of DTAA.
+
+    "treaty_elections": [
+    // CLASSIFICATION: OPTIONAL
+      // Array — per-income-stream treaty rate election.
+      // Engine picks lower of (domestic, treaty) per stream rather than per taxpayer.
+      {
+        "income_type": null,        // "interest" | "dividend" | "royalty" | "fts" | "capital_gains"
+        // CLASSIFICATION: OPTIONAL
+        "elected_rate": null,       // decimal e.g. 0.15
+        // CLASSIFICATION: OPTIONAL
+        "treaty_article": null      // string e.g. "Art. 11(2)(a) India-US DTAA"
+        // CLASSIFICATION: OPTIONAL
+      }
+    ],
+
+    "mfn_clause_invoked": null
+    // CLASSIFICATION: OPTIONAL
+    // bool
+    // For treaties with MFN protocols (Netherlands, France, Switzerland, etc.).
+    // Triggers per-stream rate recomputation against the lowest-rate comparable treaty.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 4 — PROGRESSIVE COMPLIANCE DOCUMENTS
+  // PROGRESSIVE | Required before final ITR computation
+  // ENABLED IF: dtaa.tax_residency_country is set
+  // ══════════════════════════════════════════════════════════════════════
+
+  "compliance_docs": {
+
+    // ── TRC Details ── ENABLED IF: dtaa.trc_status = true
+    "trc": {
+      "validity_start_date": null,
+      // CLASSIFICATION: CONDITIONAL
+      // "YYYY-MM-DD"
+      // Engine validates against each income payment date per Rule 21AB.
+
+      "validity_end_date": null,
+      // CLASSIFICATION: CONDITIONAL
+      // "YYYY-MM-DD"
+
+      "document_uploaded": null
+      // CLASSIFICATION: OPTIONAL
+      // bool — true = VERIFIED (treaty rates unlocked for ITR XML);
+      //        false = DECLARED (provisional treaty rates with badge).
+    },
+
+    // ── Form 10F ── ENABLED IF: TRC is present but missing required fields
+    "form_10f": {
+      "is_filed": null,
+      // CLASSIFICATION: CONDITIONAL
+      // bool
+      "ack_number": null
+      // CLASSIFICATION: CONDITIONAL
+      // string (15-digit ack from IT e-filing portal)
+      // Electronic Form 10F mandatory for PAN holders. Treaty rates BLOCKED until ack entered.
+    },
+
+    // ── Section 197 Lower TDS Certificate ── PROGRESSIVE
+    // ENABLED IF: dtaa section active (residency lock = "NR")
+    // Decoupled from property gate — also covers NRO interest, dividends, etc.
+    "section_197_cert": {
+      "is_available": null,             // bool
+      // CLASSIFICATION: OPTIONAL
+      "rate": null,                     // decimal e.g. 0.05. ENABLED IF is_available = true
+      // CLASSIFICATION: CONDITIONAL
+                                        // Overrides BOTH domestic AND DTAA rate.
+      "validity_start_date": null,      // ENABLED IF is_available = true
+      // CLASSIFICATION: CONDITIONAL
+      "validity_end_date": null,        // ENABLED IF is_available = true
+      // CLASSIFICATION: CONDITIONAL
+      "covered_income_types": null      // array e.g. ["PROPERTY_CG","NRO_INTEREST","DIVIDEND"]
+      // CLASSIFICATION: CONDITIONAL
+    },
+
+    // ── Chapter XII-A Legacy Regime ── ENABLED IF nr_years_last_10_gte_9 = true OR lock = "NR"
+    // Loosened gate (was NR-only in v2): a current ROR who was NR in prior years
+    // may have previously elected XII-A and is bound by the s.115I one-way door.
+    "chapter_xiia_elected": null
+    // CLASSIFICATION: OPTIONAL
+    // bool | PROGRESSIVE
+    // Have you ever elected the Chapter XII-A special tax regime in any prior ITR?
+    // Once opted out, CANNOT re-enter (s.115I) — flag for CA before any change.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 5 — BANK ACCOUNTS
+  // ENABLED IF: residency lock IN ["NR","RNOR","ROR"]
+  // Array — one object per account
+  // ══════════════════════════════════════════════════════════════════════
+
+  "bank_accounts": [
+    {
+      "bank_name": null,                  // string
+      // CLASSIFICATION: OPTIONAL
+      "account_type": null,               // "NRE"|"NRO"|"FCNR"|"RFC"|"GIFT_IFSC"|"SAVINGS"|"CURRENT"
+      // CLASSIFICATION: REQUIRED
+      "current_balance": null,            // number
+      // CLASSIFICATION: REQUIRED
+      "current_balance_currency": null,   // ISO 4217
+      // CLASSIFICATION: OPTIONAL
+      "annual_interest_rate": null,       // decimal e.g. 0.065
+      // CLASSIFICATION: OPTIONAL
+      "interest_credited_this_fy_inr": null,
+      // CLASSIFICATION: REQUIRED
+      // integer (INR) — actual interest credited this FY. Required for s.80TTA/TTB
+      // computation and for distinguishing NRE-exempt from NRO-taxable interest.
+
+      "account_conversion_date": null,
+      // CLASSIFICATION: CONDITIONAL
+      // "YYYY-MM-DD" | OPTIONAL
+      // ENABLED IF: account_type = "NRE" AND lock changed to RNOR or ROR this FY.
+      // CRITICAL: even 1 day as ROR = full year NRE interest taxable (no mid-year split).
+
+      "fcnr_maturity_date": null,
+      // CLASSIFICATION: CONDITIONAL
+      // ENABLED IF: account_type = "FCNR"
+
+      "nro_balance": null,                // ENABLED IF account_type = "NRO". Tracks USD 1M limit.
+      // CLASSIFICATION: CONDITIONAL
+      "nro_balance_currency": "INR"
+      // CLASSIFICATION: OPTIONAL
+    }
+  ],
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 6 — NRO REPATRIATION
+  // ENABLED IF: any bank_account has account_type = "NRO"
+  // ══════════════════════════════════════════════════════════════════════
+
+  "nro_repatriation": {
+
+    "cumulative_repatriated_usd_this_fy": null,
+    // CLASSIFICATION: OPTIONAL
+    // number (USD). Annual limit: USD 1M aggregate. Alerts at 80% / 95%.
+
+    "pending_repatriation_inr": null,
+    // CLASSIFICATION: OPTIONAL
+    // number (INR). Determines Form 15CA/15CB trigger (INR 5L threshold).
+
+    "tds_deducted_on_nro_balance": null
+    // CLASSIFICATION: OPTIONAL
+    // bool. false → TAX_CLEARANCE_REQUIRED fires.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 7 — IMMOVABLE PROPERTY
+  // GATE: has_indian_property_transaction (asked first)
+  // Applies to ALL residency statuses (rates and TDS obligations differ).
+  // ══════════════════════════════════════════════════════════════════════
+
+  "property": {
+
+    "has_indian_property_transaction": null,
+    // CLASSIFICATION: REQUIRED
+    // bool — GATE
+    // Selling, or have sold, Indian immovable property this FY?
+
+    "properties": [
+      {
+        "property_type": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "residential"|"commercial"|"land"|"agricultural_rural"|"under_construction"
+        // agricultural_rural → exempt (s.10(37)). Only "residential" qualifies for s.54.
+
+        "acquisition_date": null,         // "YYYY-MM-DD". Inherited: original owner's date.
+        // CLASSIFICATION: CONDITIONAL
+        "actual_cost": null,              // number (INR)
+        // CLASSIFICATION: CONDITIONAL
+        "actual_cost_currency": null,     // ISO 4217
+        // CLASSIFICATION: OPTIONAL
+        "pre_2001_fmv_inr": null,
+        // CLASSIFICATION: CONDITIONAL
+        // ENABLED IF: acquisition_date < "2001-04-01"
+        // Engine uses MAX(actual_cost, pre_2001_fmv_inr) as cost basis.
+
+        "transfer_expenses_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // number (INR). Brokerage, legal fees, stamp duty paid by seller.
+        // Statutorily deductible from sale consideration before CG computation.
+
+        "sale_date": null,                // "YYYY-MM-DD"
+        // CLASSIFICATION: CONDITIONAL
+                                          // FA 2024: pre-23 Jul → 20% indexed (residents only);
+                                          //          post-23 Jul → 12.5% no indexation;
+                                          //          NRIs: always 12.5% post Jul 2024.
+        "sale_consideration": null,       // number (INR)
+        // CLASSIFICATION: CONDITIONAL
+        "sale_consideration_currency": null,
+        // CLASSIFICATION: OPTIONAL
+
+        "stamp_duty_value": null,
+        // CLASSIFICATION: OPTIONAL
+        // number (INR) — circle rate at SALE date.
+        // s.50C: if SDV > sale price by > 10%, SDV used as deemed consideration.
+        "stamp_duty_value_currency": "INR",
+        // CLASSIFICATION: OPTIONAL
+
+        // ── Buyer-side TDS (NRI sales — s.195) ──
+        "buyer_tan": null,                // string. ENABLED IF lock = "NR"
+        // CLASSIFICATION: CONDITIONAL
+        "buyer_tds_deducted_inr": null,   // integer. ENABLED IF lock = "NR"
+        // CLASSIFICATION: CONDITIONAL
+        "buyer_tds_challan_number": null, // string.  ENABLED IF lock = "NR"
+        // CLASSIFICATION: OPTIONAL
+        // s.195 TDS = 12.5% + surcharge + cess on FULL sale value (not gain) for NRI sellers
+        // unless Section 197 cert exists. Required for 26AS reconciliation.
+
+        "is_joint_property": null,        // bool
+        // CLASSIFICATION: OPTIONAL
+        "ownership_percentage": null,     // 1–100. ENABLED IF is_joint_property = true
+        // CLASSIFICATION: CONDITIONAL
+
+        "is_inherited": null,             // bool
+        // CLASSIFICATION: OPTIONAL
+        "original_owner_acquisition_date": null,  // ENABLED IF is_inherited = true
+        // CLASSIFICATION: CONDITIONAL
+        "original_owner_cost": null,              // ENABLED IF is_inherited = true
+        // CLASSIFICATION: CONDITIONAL
+        "original_owner_cost_currency": null,     // ENABLED IF is_inherited = true
+        // CLASSIFICATION: CONDITIONAL
+
+        // ── Reinvestment Exemptions (LTCG only) ──
+        "reinvestment_exemption_claimed": null,
+        // CLASSIFICATION: OPTIONAL
+        // "none" | "s54" | "s54f" | "s54ec"
+
+        "new_property_cost": null,           // ENABLED IF claimed IN ["s54","s54f"]. Cap ₹10Cr.
+        // CLASSIFICATION: CONDITIONAL
+        "new_property_cost_currency": "INR",
+        // CLASSIFICATION: OPTIONAL
+        "new_property_purchase_date": null,
+        // CLASSIFICATION: CONDITIONAL
+
+        "s54_two_house_option": null,
+        // CLASSIFICATION: DERIVED
+        // DERIVED | bool
+        // TRUE when claimed = "s54" AND LTCG <= ₹2 Cr AND not previously exercised.
+
+        "bond_investment": null,             // ENABLED IF claimed = "s54ec". Cap ₹50L.
+        // CLASSIFICATION: CONDITIONAL
+        "bond_investment_currency": "INR",
+        // CLASSIFICATION: OPTIONAL
+        "bond_investment_date": null         // Within 6 months of sale_date. 5-year lock.
+        // CLASSIFICATION: CONDITIONAL
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 8 — FINANCIAL HOLDINGS (listed equity, MFs, ETFs, bonds)
+  // Applies to ALL residency statuses
+  // ══════════════════════════════════════════════════════════════════════
+
+  "financial_holdings": {
+
+    "has_financial_transactions": null,
+    // CLASSIFICATION: REQUIRED
+    // bool — gate
+
+    "transactions": [
+      {
+        "asset_class": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "listed_equity"|"equity_mutual_fund"|"debt_mutual_fund_pre_apr23"
+        // |"debt_mutual_fund_post_apr23"|"hybrid_mf_equity"|"hybrid_mf_debt"
+        // |"international_mf"|"fof"|"etf"|"bond_listed"|"reit_invit"|"vda_crypto"
+
+        "asset_name_or_ticker": null,
+        // CLASSIFICATION: OPTIONAL
+        "isin": null,
+        // CLASSIFICATION: OPTIONAL
+        "quantity": null,
+        // CLASSIFICATION: CONDITIONAL
+        "acquisition_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "purchase_value": null,
+        // CLASSIFICATION: CONDITIONAL
+        "purchase_currency": null,
+        // CLASSIFICATION: OPTIONAL
+        "fmv_31jan2018_per_unit_inr": null,
+        // CLASSIFICATION: CONDITIONAL
+        // ENABLED IF: acquisition_date < "2018-02-01" AND asset_class IN ["listed_equity","equity_mutual_fund"]
+        // Grandfathered FMV per s.112A. Engine uses MAX(purchase_value, qty * fmv_31jan2018) as cost.
+
+        "sale_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "sale_value": null,
+        // CLASSIFICATION: CONDITIONAL
+        "sale_currency": null,
+        // CLASSIFICATION: OPTIONAL
+        "stt_paid": null
+        // CLASSIFICATION: CONDITIONAL
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 9 — COMMODITIES (Gold, Silver, SGB)
+  // ══════════════════════════════════════════════════════════════════════
+
+  "commodities": {
+
+    "has_commodity_transactions": null,
+    // CLASSIFICATION: REQUIRED
+
+    "transactions": [
+      {
+        "commodity_type": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "physical_gold"|"sovereign_gold_bond_original"|"sovereign_gold_bond_secondary"
+        // |"silver"|"gold_etf"|"gold_fund_of_funds"|"other"
+
+        "quantity": null,
+        // CLASSIFICATION: CONDITIONAL
+        "acquisition_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "purchase_value": null,
+        // CLASSIFICATION: CONDITIONAL
+        "purchase_currency": null,
+        // CLASSIFICATION: OPTIONAL
+
+        "is_maturity_redemption": null,
+        // CLASSIFICATION: CONDITIONAL
+        // ENABLED IF commodity_type = "sovereign_gold_bond_original"
+        // true → FULLY EXEMPT.
+
+        "sale_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "sale_value": null,
+        // CLASSIFICATION: CONDITIONAL
+        "sale_currency": null
+        // CLASSIFICATION: OPTIONAL
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 10 — UNLISTED EQUITY
+  // ══════════════════════════════════════════════════════════════════════
+
+  "unlisted_equity": {
+
+    "has_unlisted_equity_transaction": null,
+    // CLASSIFICATION: REQUIRED
+
+    "transactions": [
+      {
+        "company_name": null,
+        // CLASSIFICATION: OPTIONAL
+        "acquisition_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        "cost_per_share": null,
+        // CLASSIFICATION: CONDITIONAL
+        "cost_per_share_currency": null,
+        // CLASSIFICATION: OPTIONAL
+        "number_of_shares": null,
+        // CLASSIFICATION: CONDITIONAL
+        "sale_price_per_share": null,
+        // CLASSIFICATION: CONDITIONAL
+        "sale_price_per_share_currency": null,
+        // CLASSIFICATION: OPTIONAL
+        "sale_date": null,
+        // CLASSIFICATION: CONDITIONAL
+
+        "fmv_valuation_report_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        // ENABLED IF lock = "NR"
+        // FEMA: NRI selling to resident must sell at >= FMV. Stale if > 90 days.
+
+        "original_investment_currency": null,
+        // CLASSIFICATION: CONDITIONAL
+        // ENABLED IF lock = "NR"
+        // If foreign: s.48 First Proviso applies (currency-neutralised CG).
+
+        "original_cost_in_foreign_currency": null
+        // CLASSIFICATION: CONDITIONAL
+        // ENABLED IF original_investment_currency != "INR"
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 11 — SHARE BUYBACK (post-1 Oct 2024 two-leg treatment)
+  // Buybacks on/after 1 Oct 2024: full consideration = deemed dividend (slab)
+  // AND original cost = capital loss (carry-forward).
+  // ══════════════════════════════════════════════════════════════════════
+
+  "share_buyback": {
+
+    "has_buyback_transaction": null,
+    // CLASSIFICATION: REQUIRED
+
+    "transactions": [
+      {
+        "company_name": null,
+        // CLASSIFICATION: OPTIONAL
+        "isin": null,
+        // CLASSIFICATION: OPTIONAL
+        "buyback_date": null,                      // "YYYY-MM-DD"
+        // CLASSIFICATION: CONDITIONAL
+        "tender_or_open_market": null,             // "tender" | "open_market"
+        // CLASSIFICATION: CONDITIONAL
+        "shares_tendered": null,                   // integer
+        // CLASSIFICATION: CONDITIONAL
+        "consideration_received_inr": null,        // integer (INR)
+        // CLASSIFICATION: CONDITIONAL
+        "original_cost_inr": null,                 // integer (INR)
+        // CLASSIFICATION: CONDITIONAL
+        "original_acquisition_date": null,         // "YYYY-MM-DD"
+        // CLASSIFICATION: CONDITIONAL
+
+        "buyback_pre_or_post_oct2024": null,
+        // CLASSIFICATION: DERIVED
+        // DERIVED | "pre_oct2024" | "post_oct2024"
+        // Engine sets based on buyback_date.
+        // post_oct2024 → TWO LEGS:
+        //   Leg A: full consideration_received_inr → other_sources.dividend_inr (slab)
+        //   Leg B: original_cost_inr → capital loss → carry_forward_losses.cg_loss_cf
+        // pre_oct2024 → s.115QA company-level tax; nothing taxed in shareholder's hands.
+
+        "deemed_dividend_inr": null,
+        // CLASSIFICATION: DERIVED
+        // DERIVED | integer (INR)
+        // Equals consideration_received_inr if post_oct2024, else 0. Routes to other_sources.
+
+        "capital_loss_inr": null
+        // CLASSIFICATION: DERIVED
+        // DERIVED | integer (INR)
+        // Equals original_cost_inr if post_oct2024, else 0. Routes to carry_forward_losses.
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 12 — DOMESTIC INCOME HEADS (detailed sub-fields)
+  // Income scope: NR → India-source only. RNOR → India + India-controlled business.
+  //               ROR → worldwide.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "domestic_income": {
+
+    // ── SALARY (DOM-01) ──────────────────────────────────────────────
+    "salary": {
+      "has_salary_income": null,                // bool — gate
+      // CLASSIFICATION: REQUIRED
+      "gross_salary_inr": null,                 // integer (INR)
+      // CLASSIFICATION: CONDITIONAL
+      "exempt_allowances_inr": null,            // integer — total exempt allowances
+      // CLASSIFICATION: OPTIONAL
+      "hra_received_inr": null,                 // integer
+      // CLASSIFICATION: OPTIONAL
+      "rent_paid_inr": null,                    // integer
+      // CLASSIFICATION: CONDITIONAL
+      "is_metro_city": null,                    // bool — drives 50% vs 40% HRA cap
+      // CLASSIFICATION: CONDITIONAL
+      "basic_da_inr": null,                     // integer — base for HRA computation
+      // CLASSIFICATION: CONDITIONAL
+      "lta_claimed_inr": null,                  // integer
+      // CLASSIFICATION: OPTIONAL
+      "perquisites_inr": null,                  // integer
+      // CLASSIFICATION: OPTIONAL
+      "esop_perquisite_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      // integer — FMV at exercise minus exercise price; taxed as salary in exercise year.
+      "professional_tax_inr": null,             // integer
+      // CLASSIFICATION: OPTIONAL
+      "employer_nps_contribution_inr": null,    // integer — s.80CCD(2), outside 80C ceiling
+      // CLASSIFICATION: OPTIONAL
+      "prior_employer_salary_inr": null         // integer — mid-year switch reconciliation
+      // CLASSIFICATION: OPTIONAL
+    },
+
+    // ── HOUSE PROPERTY (DOM-02) ──────────────────────────────────────
+    "house_property": {
+      "has_house_property_income": null,        // bool — gate
+      // CLASSIFICATION: REQUIRED
+      "properties": [
+        {
+          "property_use": null,                 // "SOP" | "LOP" | "DLOP"
+          // CLASSIFICATION: CONDITIONAL
+          "gross_annual_value_inr": null,
+          // CLASSIFICATION: CONDITIONAL
+          "municipal_taxes_paid_inr": null,
+          // CLASSIFICATION: OPTIONAL
+          "interest_on_borrowed_capital_inr": null,
+          // CLASSIFICATION: CONDITIONAL
+          "pre_construction_interest_inr": null,
+          // CLASSIFICATION: OPTIONAL
+          // 1/5 schedule across 5 years post-completion
+          "is_self_occupied_with_loan": null,   // bool — ₹2L cap under s.24(b)
+          // CLASSIFICATION: CONDITIONAL
+          "co_owner_share_percent": null        // 1–100
+          // CLASSIFICATION: OPTIONAL
+        }
+      ]
+    },
+
+    // ── BUSINESS / F&O (DOM-03) ──────────────────────────────────────
+    // Comprehensive business/profession/F&O input block. Source of truth:
+    // DOM_Tax_03_Business_FnO v2.0. All fields below feed the PGBP
+    // computation engine covering s.28 through s.44 ITA 1961.
+    //
+    // SUB-BLOCK STRUCTURE:
+    //   business_income (this block)
+    //     ├── Classification & regime
+    //     ├── Presumptive taxation inputs (s.44AD / s.44ADA / s.44AE)
+    //     ├── Regular computation inputs (s.30–s.37)
+    //     ├── Depreciation asset blocks (s.32)
+    //     ├── Speculative & F&O income
+    //     ├── GST interaction
+    //     ├── Partner income (firm / LLP)
+    //     ├── MSME payables (s.43B(h))
+    //     └── Expense breakdown (s.40–s.40A disallowances)
+    "business_income": {
+
+      // Comprehensive business/profession/F&O input block. Source of truth:
+      // DOM_Tax_03_Business_FnO v2.0. All fields below feed the PGBP
+      // computation engine covering s.28 through s.44 ITA 1961.
+      //
+      // SUB-BLOCK STRUCTURE:
+      //   business_income (this block)
+      //     ├── Classification & regime
+      //     ├── Turnover & receipts
+      //     ├── Presumptive taxation inputs (s.44AD / s.44ADA / s.44AE)
+      //     ├── Opening / closing stock (inventory businesses)
+      //     ├── GST interaction
+      //     ├── Regular computation inputs (s.30–s.37)
+      //     ├── Depreciation asset blocks (s.32)
+      //     ├── Speculative & F&O income
+      //     ├── Deemed income (s.41 remission, bad-debt recovery)
+      //     ├── Partner income (firm / LLP)
+      //     ├── MSME payables (s.43B(h))
+      //     └── AMT credit brought forward (s.115JC)
+
+      "has_business_or_fo_income": null,
+      // CLASSIFICATION: REQUIRED
+      // bool — GATE. If false, entire business_income block is hidden.
+
+      // ═════════════════════════════════════════════════════════════════
+      // CLASSIFICATION & REGIME
+      // ═════════════════════════════════════════════════════════════════
+
+      "nature_of_business": [],
+      // CLASSIFICATION: CONDITIONAL
+      // array of enum — may contain any of:
+      //   "small_business" | "professional" | "goods_transport" | "fno_trader"
+      //   | "intraday_trader" | "regular_business" | "partner_in_firm"
+      //
+      // ENABLED IF: has_business_or_fo_income = true
+      // BUG-FIX v5.1: changed from single enum to array. DOM_Tax_03 §1.2
+      // classification decision tree permits a taxpayer to hold multiple
+      // income classifications simultaneously (e.g., professional consultant
+      // who also runs an F&O book and occasional intraday equity trades).
+      // Single-enum forced users to misrepresent. Empty array = no business
+      // classification (gate should not have been true; engine validates).
+      // "fno_trader"      → s.43(5) proviso (d) non-speculative path (Section 6).
+      // "intraday_trader" → s.43(5) speculative path (Section 5).
+      // "partner_in_firm" → partner_income sub-block (s.28(v), s.10(2A)).
+
+      "presumptive_scheme": [],
+      // CLASSIFICATION: CONDITIONAL
+      // array of enum — may contain any of:
+      //   "s44AD" | "s44ADA" | "s44AE"
+      //
+      // ENABLED IF: has_business_or_fo_income = true
+      // BUG-FIX v5.1: changed from single enum to array. DOM_Tax_03 §4.2
+      // explicitly states: "A person with both transport (s.44AE) and other
+      // business (s.44AD eligible) can opt for both schemes simultaneously
+      // for their respective businesses." Empty array = "none" (regular
+      // computation path, Section 7 of DOM_Tax_03).
+      //
+      // NR-SCOPE GATE (engine-enforced, not a user gate):
+      //   "s44AD"  → lock IN ["ROR","RNOR"] (resident assessee required)
+      //   "s44ADA" → lock IN ["ROR","RNOR"] (resident individual required)
+      //   "s44AE"  → no residency restriction (DOM_Tax_03 §4.1)
+      // Engine rejects and surfaces NR_INELIGIBLE_PRESUMPTIVE if NR selects
+      // s44AD or s44ADA.
+      //
+      // ELIGIBILITY (validated before acceptance):
+      //   s.44AD  → resident individual/HUF/firm (not LLP), eligible business,
+      //             turnover ≤ ₹2Cr (₹3Cr if ≥ 95% digital), 5-year re-entry check.
+      //   s.44ADA → resident individual only, notified profession (Rule 6F),
+      //             gross receipts ≤ ₹75L.
+      //   s.44AE  → goods carriage owner, max 10 vehicles.
+
+      "profession_type": null,
+      // CLASSIFICATION: CONDITIONAL
+      // "legal" | "medical" | "engineering" | "architecture" | "accountancy"
+      // | "technical_consultancy" | "interior_decoration" | "authorised_representative"
+      // | "film_artist" | "it_services" | "other"
+      //
+      // ENABLED IF: "s44ADA" IN presumptive_scheme OR "professional" IN nature_of_business
+      // Exhaustive list per Rule 6F. s.44ADA is available ONLY for the
+      // notified professions listed above. "other" → s.44ADA not available;
+      // must use regular computation if receipts exceed thresholds.
+
+      "s115BAC_optout_history": null,
+      // CLASSIFICATION: OPTIONAL
+      // bool
+      // Has the user previously opted OUT of the New Tax Regime under
+      // s.115BAC(6)? If true → PERMANENTLY locked into Old Regime for all
+      // years with business income. Hard block on profile.tax_regime = "NEW".
+      // DOM_Tax_03 §1.3.
+
+      // ═════════════════════════════════════════════════════════════════
+      // TURNOVER & RECEIPTS
+      // ═════════════════════════════════════════════════════════════════
+
+      "turnover_inr": null,
+      // CLASSIFICATION: CONDITIONAL
+      // integer (INR)
+      // ENABLED IF: has_business_or_fo_income = true
+      // Total gross turnover or receipts for the FY. Used for:
+      //   s.44AB audit threshold (₹1Cr cash, ₹10Cr if ≥ 95% digital)
+      //   s.44AD eligibility threshold (₹2Cr / ₹3Cr)
+      //   s.44ADA eligibility threshold (₹75L)
+
+      "digital_receipts_inr": null,
+      // CLASSIFICATION: CONDITIONAL
+      // integer (INR)
+      // ENABLED IF: "s44AD" IN presumptive_scheme
+      // Receipts received via banking channels: bank transfer, UPI, NEFT,
+      // RTGS, IMPS, credit/debit card, account payee cheque, demand draft.
+      // Drives: (a) the 6% presumptive rate (vs 8% for cash), and
+      //         (b) the enhanced ₹3Cr threshold (if digital ≥ 95% of total).
+      // DOM_Tax_03 §2.2: presumptive_income = (digital * 0.06) + (cash * 0.08).
+      // Validation: digital_receipts_inr + cash_receipts_inr must equal turnover_inr.
+
+      "cash_receipts_inr": null,
+      // CLASSIFICATION: CONDITIONAL
+      // integer (INR)
+      // ENABLED IF: "s44AD" IN presumptive_scheme
+      // Receipts received in cash or non-banking modes.
+      // Drives the 8% presumptive rate.
+
+      "gross_receipts_inr": null,
+      // CLASSIFICATION: CONDITIONAL
+      // integer (INR)
+      // ENABLED IF: "s44ADA" IN presumptive_scheme OR ("professional" IN nature_of_business AND presumptive_scheme = [])
+      // For professionals: s.44ADA threshold check at ₹75L.
+      // For regular computation: opening figure for PGBP computation.
+
+      // ═════════════════════════════════════════════════════════════════
+      // s.44AD ELECTION HISTORY (5-YEAR RE-ENTRY BAN — s.44AD(4))
+      // ═════════════════════════════════════════════════════════════════
+
+      "s44AD_last_exit_ay": null,
+      // CLASSIFICATION: OPTIONAL
+      // string e.g. "AY2023-24" | null
+      // The assessment year in which the taxpayer last opted out of s.44AD
+      // (by declaring income below the 8%/6% threshold or by not opting).
+      // If not null, engine checks: current_ay minus last_exit_ay ≤ 5 →
+      // S44AD_REENTRY_BLOCKED flag fires, s.44AD is disabled in UI.
+      // Re-entry permitted from (last_exit_ay + 6). DOM_Tax_03 §2.5.
+
+      "s44AD_opted_current_year": null,
+      // CLASSIFICATION: OPTIONAL
+      // bool
+      // Is the taxpayer electing s.44AD for the current assessment year?
+      // Used in conjunction with s44AD_last_exit_ay for the 5-year ban
+      // enforcement. If false and prior years had s.44AD, engine records
+      // the exit AY for future ban computation.
+
+      // ═════════════════════════════════════════════════════════════════
+      // s.44AE — GOODS TRANSPORT VEHICLES
+      // Normalized template (v5.1): sub-fields now formally declared.
+      // ═════════════════════════════════════════════════════════════════
+
+      "goods_vehicles": [
+        // CLASSIFICATION: CONDITIONAL
+        // array — ENABLED IF: "s44AE" IN presumptive_scheme
+        // Max 10 vehicles. Engine sums per-vehicle presumptive income.
+        // DOM_Tax_03 §4.
+        {
+          "vehicle_type": null,
+          // CLASSIFICATION: CONDITIONAL
+          // "heavy" | "light"
+          // "heavy" = GVW > 12 tonnes → ₹1,000/tonne/month
+          // "light" = GVW ≤ 12 tonnes → ₹7,500/vehicle/month
+
+          "gvw_tonnes": null,
+          // CLASSIFICATION: CONDITIONAL
+          // integer — Gross Vehicle Weight in tonnes
+          // ENABLED IF: vehicle_type = "heavy"
+          // Drives per-tonne presumptive income computation.
+
+          "months_owned": null
+          // CLASSIFICATION: CONDITIONAL
+          // integer (1–12)
+          // Months (or part of month) the vehicle was owned during the FY.
+          // A "part of month" counts as a full month per DOM_Tax_03 §4.2.
+        }
+      ],
+
+      // ═════════════════════════════════════════════════════════════════
+      // OPENING / CLOSING STOCK (INVENTORY BUSINESSES — DOM_Tax_03 §11.3)
+      // ENABLED IF: presumptive_scheme = [] AND "regular_business" IN nature_of_business
+      //
+      // Valuation method: cost OR net realisable value, whichever is LOWER
+      // (AS 2 / Ind AS 2). Engine cannot enforce method — flags GP-ratio
+      // variance > 10% vs prior year for CA review.
+      // ═════════════════════════════════════════════════════════════════
+
+      "opening_stock_inr": null,
+      // CLASSIFICATION: CONDITIONAL
+      // integer (INR)
+      // ENABLED IF: presumptive_scheme = [] AND "regular_business" IN nature_of_business
+      // Opening inventory value at 1 April (start of FY). Deducted from
+      // purchases + manufacturing cost to arrive at cost of goods sold.
+
+      "closing_stock_inr": null,
+      // CLASSIFICATION: CONDITIONAL
+      // integer (INR)
+      // ENABLED IF: presumptive_scheme = [] AND "regular_business" IN nature_of_business
+      // Closing inventory value at 31 March (end of FY). Added to gross
+      // profit computation. business_income_impact = closing - opening.
+      // Engine flags GROSS_PROFIT_RATIO_VARIANCE if GP ratio deviates >10%
+      // from prior year (DOM_Tax_03 §11.3 audit-trigger note).
+
+      // ═════════════════════════════════════════════════════════════════
+      // GST INTERACTION (DOM_Tax_03 §18.1)
+      // ═════════════════════════════════════════════════════════════════
+
+      "gst_registration_status": null,
+      // CLASSIFICATION: CONDITIONAL
+      // "regular" | "composition" | "unregistered"
+      // ENABLED IF: has_business_or_fo_income = true AND presumptive_scheme = []
+      //
+      // Drives taxable turnover computation:
+      //   "regular"      → business_turnover = gross_receipts minus gst_collected_inr
+      //   "composition"  → business_turnover = gross_receipts (implicit GST included)
+      //   "unregistered" → business_turnover = gross_receipts
+
+      "gst_collected_inr": null,
+      // CLASSIFICATION: CONDITIONAL
+      // integer (INR)
+      // ENABLED IF: gst_registration_status = "regular"
+      // Total GST collected from customers during the FY. This is a
+      // LIABILITY, not income. Subtracted from gross receipts to arrive at
+      // taxable turnover. Only irrecoverable GST (blocked ITC) becomes an
+      // allowable expense.
+
+      // ═════════════════════════════════════════════════════════════════
+      // REGULAR COMPUTATION — EXPENSE BREAKDOWN (s.30–s.37, s.40–s.40A)
+      // ENABLED IF: presumptive_scheme = []
+      //
+      // Presumptive taxpayers do NOT fill this section — all expenses are
+      // subsumed within the prescribed percentage. Only non-presumptive
+      // taxpayers provide categorised expenses for disallowance computation.
+      // ═════════════════════════════════════════════════════════════════
+
+      "expenses": {
+
+        "rent_for_business_premises_inr": null,
+        // CLASSIFICATION: CONDITIONAL
+        // integer (INR) — s.30. Fully deductible.
+
+        "repairs_maintenance_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — s.30 (buildings) + s.31 (plant/machinery). Current
+        // repairs only. Capital expenditure on repair → add to asset block
+        // for depreciation.
+
+        "employee_salary_wages_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — s.36(1)(ii). Subject to s.43B actual payment rule.
+
+        "employee_bonus_commission_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — s.36(1)(ii). Subject to s.43B actual payment rule.
+
+        "interest_on_borrowed_capital_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — s.36(1)(iii). Must be for business purpose.
+        // Pre-asset-use interest → capitalised to asset cost, not deducted.
+
+        "insurance_premium_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — s.30 (premises) + s.31 (plant) + s.36(1)(i) (livestock).
+
+        "bad_debts_written_off_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — s.36(1)(vii). Must be previously included in
+        // income AND actually written off in books. Provision for bad debts
+        // NOT deductible. Recovery in subsequent year → taxable under
+        // s.41(4) via s41_bad_debt_recovery_inr.
+
+        "brokerage_on_fno_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — brokerage fees and commissions paid to broker for
+        // F&O trades. DOM_Tax_03 §6.3.
+
+        "exchange_charges_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — exchange transaction charges, SEBI turnover fees,
+        // clearing member charges. DOM_Tax_03 §6.3.
+
+        "advisory_and_data_subscriptions_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — market data terminals (TradingView, Bloomberg),
+        // advisory fees from SEBI-registered advisors, research services.
+
+        "internet_proportion_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — proportionate internet charges for trading vs
+        // personal use.
+
+        "home_office_proportion_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — proportionate rent/electricity for room used
+        // exclusively for trading/business.
+
+        "margin_interest_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — interest on margin funding / margin pledge facility.
+
+        "ca_professional_fees_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — CA and professional fees for F&O/business tax filing.
+
+        "other_business_expenses_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — s.37(1) residual. Revenue expenditure wholly and
+        // exclusively for business. Excludes: capital expenditure, personal
+        // expenses, offences/prohibited by law. Engine sums all expense
+        // categories above plus this field for total allowable deductions.
+
+        "total_cash_payments_exceeding_limit_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — aggregate of all cash payments exceeding the
+        // s.40A(3) daily limit (₹10,000 to a single party; ₹35,000 for
+        // transporters). These amounts are 100% DISALLOWED. Engine adds
+        // this back to taxable income. DOM_Tax_03 §9.6.
+
+        "has_related_party_payments": null,
+        // CLASSIFICATION: OPTIONAL
+        // bool — s.40A(2). Are there any payments to specified related
+        // parties (relatives, associated concerns)? If true →
+        // RELATED_PARTY_PAYMENT_REVIEW flag fires for CA review. Engine
+        // cannot determine "excessive" — requires professional judgment.
+
+        "payments_to_non_residents_no_tds_inr": null,
+        // CLASSIFICATION: OPTIONAL — NEW v5.1
+        // integer (INR) — s.40(a)(i). Any interest, royalty, fees for
+        // technical services, or other sum payable outside India or to a
+        // non-resident where TDS was NOT deducted, OR after deduction was
+        // NOT deposited before return filing due date. 100% DISALLOWED.
+        // Engine adds this back to taxable income. DOM_Tax_03 §9.2.1.
+        // Note: deduction is restored in the AY when TDS is eventually
+        // deposited; engine must track deferred deductions.
+
+        "payments_to_residents_no_tds_inr": null,
+        // CLASSIFICATION: OPTIONAL — NEW v5.1
+        // integer (INR) — s.40(a)(ia). Any sum payable to a resident on
+        // which TDS was required under Chapter XVII-B but was NOT deducted,
+        // OR was deducted but NOT deposited before return filing due date.
+        // 30% DISALLOWED. Engine adds 0.30 × amount back to taxable income.
+        // DOM_Tax_03 §9.2.2. TDS_DEFAULT_DISALLOWANCE flag fires.
+        // Restored deduction in AY of actual TDS deposit.
+
+        "employer_pf_esi_contribution_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — employer contribution to PF, ESI, gratuity fund.
+        // Subject to s.43B actual payment rule: deductible only when
+        // actually paid before due date of return filing.
+
+        "employer_pf_esi_paid_before_due_date": null,
+        // CLASSIFICATION: CONDITIONAL
+        // bool — ENABLED IF employer_pf_esi_contribution_inr > 0
+        // Has the employer PF/ESI contribution been actually paid before
+        // the due date of return filing? If false → deduction deferred to
+        // year of actual payment. S43B_PAYMENT_PENDING flag fires.
+
+        // ── SCIENTIFIC RESEARCH (s.35) — NEW v5.1 ─────────────────────
+        // Finance Act 2023 removed the weighted 150%/200% deduction.
+        // Post-FA-2023: flat 100% deduction on all three categories below.
+        // DOM_Tax_03 §7.5.
+
+        "s35_own_revenue_research_inr": null,
+        // CLASSIFICATION: OPTIONAL — NEW v5.1
+        // integer (INR) — s.35(1)(i). Revenue expenditure on own in-house
+        // scientific research related to business. 100% deductible.
+
+        "s35_own_capital_research_inr": null,
+        // CLASSIFICATION: OPTIONAL — NEW v5.1
+        // integer (INR) — s.35(2). Capital expenditure on own scientific
+        // research (other than land). 100% deductible in year incurred.
+
+        "s35_donation_to_approved_body_inr": null,
+        // CLASSIFICATION: OPTIONAL — NEW v5.1
+        // integer (INR) — s.35(1)(ii) / s.35(2AA). Donation to approved
+        // scientific research associations, National Laboratory, IIT, or
+        // approved university. 100% deductible (no weighted benefit from
+        // AY 2024-25 per Finance Act 2023).
+
+        // ── PRELIMINARY EXPENSES (s.35D) — NEW v5.1 ───────────────────
+        // 1/5th deductible over 5 successive AYs. Cap: 5% of cost of
+        // project OR 5% of capital employed, whichever is higher.
+        // DOM_Tax_03 §7.6.
+
+        "s35D_total_preliminary_expenses_inr": null,
+        // CLASSIFICATION: OPTIONAL — NEW v5.1
+        // integer (INR) — total preliminary expenses eligible for
+        // amortisation over 5 years (legal charges, MOA/AOA drafting,
+        // registration, feasibility study, market research before
+        // commencement). Engine derives annual deduction = total / 5.
+
+        "s35D_year_of_commencement": null,
+        // CLASSIFICATION: CONDITIONAL — NEW v5.1
+        // string e.g. "FY2023-24"
+        // ENABLED IF: s35D_total_preliminary_expenses_inr > 0
+        // The FY of business commencement or extension. Engine computes
+        // which AYs (AY1 through AY5) the 1/5th annual deduction applies
+        // to, and verifies the current FY is within the 5-year window.
+
+        // ── VRS AMORTISATION (s.35DDA) — NEW v5.1 ─────────────────────
+        // 1/5th deductible over 5 successive AYs from year of payment.
+        // Full deduction in year of payment NOT available. DOM_Tax_03 §7.7.
+
+        "s35DDA_vrs_payments_inr": null,
+        // CLASSIFICATION: OPTIONAL — NEW v5.1
+        // integer (INR) — total VRS (Voluntary Retirement Scheme) payments
+        // made to employees. Engine derives annual deduction = total / 5.
+
+        "s35DDA_first_year_of_payment": null,
+        // CLASSIFICATION: CONDITIONAL — NEW v5.1
+        // string e.g. "FY2023-24"
+        // ENABLED IF: s35DDA_vrs_payments_inr > 0
+        // The FY in which the VRS payment was made. Engine computes the
+        // 5-AY amortisation window.
+
+        // ── STT / CTT AUDIT TRAIL — NEW v5.1 ──────────────────────────
+        // NOT deductible as business expense (DOM_Tax_03 §6.3, s.36(1)(xv)).
+        // Recorded here for audit traceability only. Engine explicitly
+        // EXCLUDES these from the allowable-expense sum.
+
+        "stt_paid_inr": null,
+        // CLASSIFICATION: OPTIONAL — NEW v5.1
+        // integer (INR) — Securities Transaction Tax paid on F&O trades
+        // (and equity delivery). NOT DEDUCTIBLE. Recorded for reconciliation
+        // with broker contract notes and Form 26AS. DOM_Tax_03 §6.3.
+
+        "ctt_paid_inr": null
+        // CLASSIFICATION: OPTIONAL — NEW v5.1
+        // integer (INR) — Commodities Transaction Tax paid on commodity
+        // derivative trades. NOT DEDUCTIBLE. Recorded for reconciliation
+        // only. DOM_Tax_03 §6.3.
+      },
+
+      // ═════════════════════════════════════════════════════════════════
+      // DEPRECIATION — ASSET BLOCKS (s.32)
+      // ENABLED IF: presumptive_scheme = []
+      //
+      // WDV method only for individuals (SLM not available).
+      // Assets grouped into blocks by class and rate.
+      // DOM_Tax_03 §8.
+      // ═════════════════════════════════════════════════════════════════
+
+      "asset_blocks": [
+        // CLASSIFICATION: CONDITIONAL
+        // Array of block objects — one per asset class.
+        // ENABLED IF: presumptive_scheme = []
+        //
+        // ENGINE COMPUTATION (per block):
+        //   closing_wdv = opening_wdv + additions - sale_consideration
+        //   IF closing_wdv > 0: depreciation = closing_wdv * rate
+        //     (half-year rule: if addition_date >= 1 Oct → 50% of rate)
+        //   IF closing_wdv < 0: STCG under s.50 → route to Capital Gains module
+        //
+        // GOODWILL: excluded from depreciable blocks from AY 2021-22 onwards.
+        // Engine must reject asset_class = "goodwill" with an error.
+        {
+          "asset_class": null,
+          // CLASSIFICATION: CONDITIONAL
+          // "building_residential" (5%) | "building_commercial" (10%)
+          // | "building_temporary" (40%) | "plant_machinery_general" (15%)
+          // | "computers_peripherals" (40%) | "motor_vehicles" (15%)
+          // | "heavy_vehicles" (30%) | "furniture_fittings" (10%)
+          // | "intangible_assets" (25%) | "books_annual" (100%)
+          // | "books_other" (60%) | "solar_energy" (40%)
+          // | "wind_energy" (40%)
+          //
+          // Rate in parentheses is the prescribed WDV rate per block.
+          // DOM_Tax_03 §8.3.
+
+          "opening_wdv_inr": null,
+          // CLASSIFICATION: CONDITIONAL
+          // integer (INR) — WDV at start of FY (1 April).
+
+          "additions_during_year_inr": null,
+          // CLASSIFICATION: OPTIONAL
+          // integer (INR) — cost of assets added to this block during the FY.
+
+          "addition_date": null,
+          // CLASSIFICATION: CONDITIONAL
+          // "YYYY-MM-DD" — ENABLED IF additions_during_year_inr > 0
+          // Date the asset was put to use. If on or after 1 October →
+          // only 50% of normal depreciation in year of addition (half-year
+          // rule). DOM_Tax_03 §8.2.
+
+          "sale_consideration_inr": null,
+          // CLASSIFICATION: OPTIONAL
+          // integer (INR) — consideration received for assets sold from
+          // this block. If sale_consideration > opening_wdv + additions →
+          // block WDV goes negative → STCG under s.50.
+          // DEPRECIABLE_ASSET_STCG flag fires.
+
+          "is_new_manufacturing_asset": null,
+          // CLASSIFICATION: OPTIONAL
+          // bool — ENABLED IF additions_during_year_inr > 0
+          // Is the addition a NEW asset used for manufacturing/production?
+          // If true → additional depreciation of 20% on cost under
+          // s.32(1)(iia). Not available for: ships, aircraft, office
+          // appliances, road transport vehicles, computers, furniture,
+          // secondhand assets.
+
+          "is_in_notified_backward_area": null
+          // CLASSIFICATION: OPTIONAL
+          // bool — ENABLED IF additions_during_year_inr > 0
+          // Is the asset installed in a notified backward area (Bihar, WB,
+          // Telangana, AP)? If true → additional 15% investment allowance
+          // under s.32AD on cost of new plant/machinery.
+        }
+      ],
+
+      // ═════════════════════════════════════════════════════════════════
+      // SPECULATIVE INCOME — INTRADAY EQUITY (s.43(5))
+      // DOM_Tax_03 §5
+      // ═════════════════════════════════════════════════════════════════
+
+      "speculative_income_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      // integer (INR) — net P&L from intraday equity trades (bought and
+      // sold same day without taking delivery). Can be positive (profit) or
+      // negative (loss). Speculative loss can ONLY be set off against
+      // speculative profit (same or subsequent years, max 4 years carry
+      // forward). DOM_Tax_03 §5.1.
+
+      "speculative_turnover_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      // integer (INR) — sum of ABSOLUTE VALUE of each individual intraday
+      // trade P&L. NOT the net position.
+      // Example: 50 trades netting +₹4L and 40 trades netting -₹3L →
+      //   turnover = ₹7L (not ₹1L).
+      // Used for s.44AB audit threshold check: if ≥ ₹1 crore → audit
+      // required. The enhanced ₹10Cr digital threshold does NOT apply to
+      // speculative trading. DOM_Tax_03 §5.4.
+
+      // ═════════════════════════════════════════════════════════════════
+      // F&O NON-SPECULATIVE INCOME (s.43(5) proviso (d))
+      // DOM_Tax_03 §6
+      // ═════════════════════════════════════════════════════════════════
+
+      "non_speculative_income_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      // integer (INR) — net P&L from F&O derivatives on recognised
+      // exchanges. Covers: equity index futures/options, single stock
+      // futures/options, currency derivatives, commodity derivatives,
+      // interest rate futures. F&O loss offsets any income EXCEPT salary;
+      // 8-year carry forward. DOM_Tax_03 §6.1.
+
+      "fno_turnover_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      // integer (INR) — F&O turnover for s.44AB audit threshold.
+      // Computation per DOM_Tax_03 §6.2:
+      //   Futures: abs(net settlement P&L per contract)
+      //   Options bought (long): abs(net P&L)
+      //   Options sold (short/written): abs(net P&L) + premium received
+      // If ≥ 95% digital AND turnover ≥ ₹10Cr → audit required.
+      // If turnover ≥ ₹1Cr (regardless of digital %) → audit required.
+      // If F&O net loss AND total income > basic exemption → audit required.
+
+      // ═════════════════════════════════════════════════════════════════
+      // DEEMED BUSINESS INCOME (s.41) — NEW v5.1
+      // DOM_Tax_03 §11.1
+      // ═════════════════════════════════════════════════════════════════
+
+      "s41_remission_income_inr": null,
+      // CLASSIFICATION: OPTIONAL — NEW v5.1
+      // integer (INR) — s.41(1). Amount obtained by way of remission or
+      // cessation of a trading liability that was PREVIOUSLY DEDUCTED as an
+      // expense in an earlier year. Taxable as PGBP in year of remission,
+      // even if business no longer carried on. Common cases: waiver of
+      // trade creditor balance, insurance claim for previously expensed
+      // loss, waiver of bank loan principal where interest was previously
+      // deducted. S41_DEEMED_INCOME flag fires.
+
+      "s41_bad_debt_recovery_inr": null,
+      // CLASSIFICATION: OPTIONAL — NEW v5.1
+      // integer (INR) — s.41(4). Recovery of a bad debt previously written
+      // off under s.36(1)(vii). Taxable only to the extent of the amount
+      // previously deducted (excess recovery is NOT taxed again). Engine
+      // should validate: value ≤ prior year's
+      // expenses.bad_debts_written_off_inr (if available in history).
+
+      // ═════════════════════════════════════════════════════════════════
+      // PARTNER INCOME — FIRM / LLP (s.28(v), s.10(2A))
+      // ENABLED IF: "partner_in_firm" IN nature_of_business
+      //
+      // DOM_Tax_03 §9.3 and §9.4.
+      // Engine must distinguish firm from LLP at input level because
+      // deductibility limits under s.40(b) apply to firms but NOT to LLPs.
+      // At the PARTNER (recipient) level, taxation is identical:
+      //   Profit share → EXEMPT under s.10(2A) for both firm and LLP.
+      //   Remuneration/salary/bonus → PGBP.
+      //   Interest on capital → PGBP.
+      // ═════════════════════════════════════════════════════════════════
+
+      "partner_income": {
+
+        "entity_type": null,
+        // CLASSIFICATION: CONDITIONAL
+        // "registered_firm" | "llp"
+        // ENABLED IF: "partner_in_firm" IN nature_of_business
+        // Drives the CA dashboard flag LLP_PROFIT_SHARE_EXEMPT and
+        // determines whether s.40(b) limits apply at the entity level.
+
+        "remuneration_from_entity_inr": null,
+        // CLASSIFICATION: CONDITIONAL
+        // integer (INR) — salary, bonus, commission received by partner
+        // from the firm/LLP. Taxable as PGBP in the partner's hands.
+        // Only the component allowable at firm level under s.40(b) is
+        // taxable at partner level (for firms; for LLPs, governed by the
+        // LLP agreement and s.37(1)).
+
+        "interest_on_capital_from_entity_inr": null,
+        // CLASSIFICATION: CONDITIONAL
+        // integer (INR) — interest on capital received by partner.
+        // Taxable as PGBP. For firms: deductible at firm level up to
+        // 12% p.a. under s.40(b). For LLPs: no express 12% statutory cap —
+        // governed by LLP agreement.
+
+        "profit_share_exempt_inr": null
+        // CLASSIFICATION: OPTIONAL
+        // integer (INR) — share of profit from the firm/LLP.
+        // FULLY EXEMPT under s.10(2A) for BOTH firm and LLP partners.
+        // Collected here for disclosure in ITR but does NOT add to
+        // taxable income.
+      },
+
+      // ═════════════════════════════════════════════════════════════════
+      // MSME PAYABLES — s.43B(h) (Finance Act 2023, AY 2024-25 onwards)
+      // ENABLED IF: presumptive_scheme = []
+      //
+      // DOM_Tax_03 §10.1.
+      // Payments to micro and small enterprises must be made within the
+      // prescribed period (15 days without agreement, 45 days with
+      // agreement). Overdue amounts are DISALLOWED in the year of accrual
+      // and deferred to year of actual payment.
+      //
+      // Applies ONLY to micro and small enterprises registered under
+      // Udyam Registration. Medium enterprises are excluded. Wholesale
+      // and retail traders are also excluded. Presumptive taxpayers
+      // (s.44AD/ADA/AE) are exempt from s.43B(h).
+      // ═════════════════════════════════════════════════════════════════
+
+      "msme_payables": [
+        // CLASSIFICATION: CONDITIONAL
+        // Array — ENABLED IF: presumptive_scheme = []
+        {
+          "supplier_name": null,
+          // CLASSIFICATION: OPTIONAL
+          // string — name of the micro/small enterprise supplier.
+
+          "amount_inr": null,
+          // CLASSIFICATION: CONDITIONAL
+          // integer (INR) — amount payable to the MSME supplier.
+
+          "invoice_date": null,
+          // CLASSIFICATION: CONDITIONAL
+          // "YYYY-MM-DD" — date of acceptance of goods/services (appointed day).
+
+          "has_written_agreement": null,
+          // CLASSIFICATION: CONDITIONAL
+          // bool — drives the prescribed period:
+          //   false → 15 days from invoice_date
+          //   true  → agreed date, max 45 days from invoice_date
+
+          "payment_date": null
+          // CLASSIFICATION: CONDITIONAL
+          // "YYYY-MM-DD" | null
+          // Actual date of payment. If null or beyond prescribed period:
+          //   MSME_PAYMENT_OVERDUE flag fires.
+          //   Deduction deferred to AY of actual payment.
+          //   Additional consequence: compound interest at 3x RBI bank
+          //   rate (monthly rests) payable to MSME — NOT deductible as
+          //   expense.
+        }
+      ],
+
+      // ═════════════════════════════════════════════════════════════════
+      // AMT CREDIT BROUGHT FORWARD (s.115JC) — NEW v5.1
+      // DOM_Tax_03 §13.
+      //
+      // AMT credit paid in prior years (when AMT > normal tax) can be
+      // carried forward for 15 years and utilised in any future year
+      // when normal tax exceeds AMT. Old Regime only — users on New
+      // Regime (s.115BAC) cannot claim or utilise AMT credit.
+      // ═════════════════════════════════════════════════════════════════
+
+      "amt_credit_bf_inr": null,
+      // CLASSIFICATION: OPTIONAL — NEW v5.1
+      // integer (INR) — aggregate AMT credit carried forward from prior
+      // AYs that is still within the 15-year utilisation window. Engine
+      // applies this credit only under Old Regime and only when normal
+      // tax > AMT in the current year.
+
+      "amt_credit_bf_origin_ay": null
+      // CLASSIFICATION: CONDITIONAL — NEW v5.1
+      // string e.g. "AY2015-16"
+      // ENABLED IF: amt_credit_bf_inr > 0
+      // The OLDEST origin AY of the outstanding AMT credit pool. Engine
+      // computes expiry: if current_ay > origin_ay + 15 → unused portion
+      // LAPSES. AMT_CREDIT_EXPIRING flag fires if within 2 AYs of expiry.
+    },
+
+    // ── AGRICULTURAL ─────────────────────────────────────────────────
+    "has_agricultural_income": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool. ENABLED IF lock IN ["ROR","RNOR"]
+    // Exempt under s.10(1) but triggers partial integration (DOM-05 §10).
+
+    "agricultural_income_inr": null
+    // CLASSIFICATION: CONDITIONAL
+    // ENABLED IF has_agricultural_income = true
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 13 — OTHER SOURCES (detailed sub-fields)
+  // Restructured from a single integer to enable family pension s.57(iia)
+  // deduction, slab-vs-special-rate separation for surcharge cap, and
+  // correct routing of buyback dividend leg.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "other_sources": {
+
+    "has_other_sources_income": null,           // bool — gate
+    // CLASSIFICATION: REQUIRED
+
+    // ── Slab-rate streams ──
+    "interest_savings_inr": null,               // integer — s.80TTA/TTB eligible
+    // CLASSIFICATION: OPTIONAL
+    "interest_fd_rd_inr": null,                 // integer
+    // CLASSIFICATION: OPTIONAL
+    "interest_bonds_inr": null,                 // integer
+    // CLASSIFICATION: OPTIONAL
+    "interest_on_it_refund_inr": null,          // integer
+    // CLASSIFICATION: OPTIONAL
+    "dividend_inr": null,                       // integer (slab rate post FA 2020)
+    // CLASSIFICATION: OPTIONAL
+    "gifts_above_50k_inr": null,                // integer — s.56(2)(x)
+    // CLASSIFICATION: OPTIONAL
+
+    // ── Family pension (s.57(iia) standard deduction) ──
+    "family_pension_gross_inr": null,           // integer
+    // CLASSIFICATION: OPTIONAL
+    "family_pension_standard_deduction_inr": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED | integer = MIN(15000, family_pension_gross_inr / 3)
+
+    // ── Special-rate streams (NOT slab; isolated for surcharge cap) ──
+    "winnings_lottery_gaming_inr": null,        // integer — s.115BB / s.115BBJ flat 30%
+    // CLASSIFICATION: OPTIONAL
+    "online_gaming_winnings_inr": null,         // integer — s.115BBJ flat 30%, no set-off
+    // CLASSIFICATION: OPTIONAL
+
+    // ── Buyback dividend leg (post-Oct 2024) ──
+    "deemed_dividend_from_buyback_inr": null
+    // CLASSIFICATION: DERIVED
+    // DERIVED | integer
+    // Sum of share_buyback.transactions[].deemed_dividend_inr where post_oct2024.
+    // Slab-taxed; included in surcharge "normal income" bucket.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 14 — DEDUCTIONS (Chapter VI-A)
+  // Screen 2L | ENABLED IF: profile.tax_regime = "OLD"
+  //                         OR lock IN ["RNOR","ROR"] (auto Old-vs-New comparison)
+  //
+  // NRI ELIGIBILITY: NRIs are statutorily blocked from 80DD, 80DDB, 80U, 80TTB,
+  // and from FRESH PPF/SCSS/SSY contributions (existing accounts may continue).
+  // The engine enforces these blocks based on the residency lock.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "deductions": {
+
+    // ── 80C (₹1.5L cap, combined with 80CCC + 80CCD(1)) ──
+    "s80C": {
+      "epf_employee_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      "ppf_inr": null,                          // ENGINE BLOCK if lock="NR" AND new account
+      // CLASSIFICATION: OPTIONAL
+      "elss_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      "life_insurance_premium_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      "principal_home_loan_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      "nsc_inr": null,                          // ENGINE BLOCK if lock="NR" AND new
+      // CLASSIFICATION: OPTIONAL
+      "tuition_fees_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      "sukanya_inr": null,                      // ENGINE BLOCK if lock="NR" AND new
+      // CLASSIFICATION: OPTIONAL
+      "tax_saving_fd_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      "scss_inr": null                          // ENGINE BLOCK if lock="NR" AND new
+      // CLASSIFICATION: OPTIONAL
+    },
+
+    // ── 80CCD(1B) — additional NPS, ₹50K cap, OUTSIDE 80C ──
+    "s80CCD_1B": {
+      "nps_additional_inr": null
+      // CLASSIFICATION: OPTIONAL
+    },
+
+    // ── 80D (Health Insurance) ──
+    "s80D": {
+      "self_family_premium_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      "parents_premium_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      "parents_are_senior": null,               // bool — drives ₹25K vs ₹50K cap
+      // CLASSIFICATION: OPTIONAL
+      "preventive_health_checkup_inr": null     // sub-cap ₹5K within overall limit
+      // CLASSIFICATION: OPTIONAL
+    },
+
+    // ── 80G (Donations) ──
+    // Per-donation array — engine cannot apply 10%-of-AGTI cap without metadata.
+    "s80G": [
+      {
+        "donee_name": null,
+        // CLASSIFICATION: OPTIONAL
+        "pan_of_donee": null,
+        // CLASSIFICATION: OPTIONAL
+        "amount_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        "deduction_percent": null,              // 50 | 100
+        // CLASSIFICATION: OPTIONAL
+        "with_qualifying_limit": null           // bool — drives 10% AGTI cap
+        // CLASSIFICATION: OPTIONAL
+      }
+    ],
+
+    // ── 80TTA / 80TTB (auto-derived from bank_accounts.interest_credited_this_fy_inr) ──
+    "s80TTA_TTB": {
+      "savings_interest_inr": null,
+      // CLASSIFICATION: DERIVED
+      // DERIVED — sum of savings interest from bank_accounts.
+      // s.80TTA: ₹10K cap (non-senior). s.80TTB: ₹50K cap (senior, ROR/RNOR only).
+      // NRI: 80TTB BLOCKED. 80TTA available on NRO savings only.
+      "applicable_section": null
+      // CLASSIFICATION: DERIVED
+      // DERIVED | "80TTA" | "80TTB" | null
+    },
+
+    // ── 80E (Education loan interest, no cap, 8 years) ──
+    "s80E": {
+      "education_loan_interest_inr": null
+      // CLASSIFICATION: OPTIONAL
+    },
+
+    // ── 80EEA / 80EE (Affordable home loan interest) ──
+    "s80EEA_EE": {
+      "affordable_home_loan_interest_inr": null,
+      // CLASSIFICATION: OPTIONAL
+      "loan_sanction_date": null                // "YYYY-MM-DD" — eligibility window
+      // CLASSIFICATION: OPTIONAL
+    }
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 15 — CARRY-FORWARD LOSSES (brought from prior FYs)
+  // Required for Schedule CYLA / BFLA / CFL assembly.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "carry_forward_losses": {
+
+    "has_brought_forward_losses": null,         // bool — gate
+    // CLASSIFICATION: REQUIRED
+
+    // Each array: list of { fy, amount_inr } objects from prior years.
+    // Engine validates expiry per the relevant section's CF window.
+
+    "business_loss_cf": [],
+    // CLASSIFICATION: CONDITIONAL
+    // [{ "fy": "FY2022-23", "amount_inr": 250000 }, ...]
+    // 8-year CF. Offsets non-speculative business income only.
+
+    "speculative_loss_cf": [],
+    // CLASSIFICATION: CONDITIONAL
+    // 4-year CF. Offsets speculative income only.
+
+    "stcg_loss_cf": [],
+    // CLASSIFICATION: CONDITIONAL
+    // 8-year CF. Offsets STCG (any rate) and LTCG.
+
+    "ltcg_loss_cf": [],
+    // CLASSIFICATION: CONDITIONAL
+    // 8-year CF. Offsets LTCG only.
+
+    "house_property_loss_cf": [],
+    // CLASSIFICATION: CONDITIONAL
+    // 8-year CF. Offsets HP income only (current-year cap of ₹2L against other heads
+    // applies to current-year HP loss, not CF).
+
+    "unabsorbed_depreciation_cf": null
+    // CLASSIFICATION: OPTIONAL
+    // integer (INR). NO time limit. Offsets any head except salary.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 16 — LRS OUTBOUND
+  // ENABLED IF: residency lock = "ROR"
+  // ══════════════════════════════════════════════════════════════════════
+
+  "lrs_outbound": {
+
+    "total_lrs_remitted_this_fy_inr": null,
+    // CLASSIFICATION: OPTIONAL
+    // number (INR). Annual limit USD 250K. TCS 20% on investment > ₹10L (w.e.f. 1 Apr 2026).
+
+    "lrs_purpose": null,
+    // CLASSIFICATION: OPTIONAL
+    // "investment"|"education_own_funds"|"education_loan"|"medical"|"travel"|"gift_donation"
+
+    "has_foreign_assets": null,
+    // CLASSIFICATION: CONDITIONAL
+    // bool. true → Schedule FA mandatory. ₹10L/yr BMA s.43 penalty for non-disclosure.
+
+    "foreign_assets": [
+      // ENABLED IF has_foreign_assets = true
+      // Per-asset rows for Schedule FA.
+      {
+        "country": null,                        // ISO 3166-1 alpha-2
+        // CLASSIFICATION: CONDITIONAL
+        "nature_of_asset": null,                // "bank"|"equity"|"property"|"bond"|"other"
+        // CLASSIFICATION: CONDITIONAL
+        "peak_balance_inr": null,
+        // CLASSIFICATION: CONDITIONAL
+        "closing_balance_inr": null,
+        // CLASSIFICATION: CONDITIONAL
+        "gross_interest_inr": null,
+        // CLASSIFICATION: OPTIONAL
+        "gross_proceeds_inr": null
+        // CLASSIFICATION: OPTIONAL
+      }
+    ],
+
+    "has_received_foreign_income": null
+    // CLASSIFICATION: CONDITIONAL
+    // bool. ENABLED IF has_foreign_assets = true
+    // true → Schedule FSI + FTC computation required.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 17 — TAX CREDITS (advance tax, TDS, FTC)
+  // PROGRESSIVE | Collected throughout the year from Form 26AS / AIS
+  // ══════════════════════════════════════════════════════════════════════
+
+  "tax_credits": {
+
+    // ── Quarter-wise advance tax (required for s.234C interest computation) ──
+    "advance_tax_q1_15jun_inr": null,           // 15% cumulative threshold
+    // CLASSIFICATION: OPTIONAL
+    "advance_tax_q2_15sep_inr": null,           // 45% cumulative threshold
+    // CLASSIFICATION: OPTIONAL
+    "advance_tax_q3_15dec_inr": null,           // 75% cumulative threshold
+    // CLASSIFICATION: OPTIONAL
+    "advance_tax_q4_15mar_inr": null,           // 100% cumulative threshold
+    // CLASSIFICATION: OPTIONAL
+
+    "tds_already_deducted_inr": null,
+    // CLASSIFICATION: OPTIONAL
+    // integer (INR). Source: Form 26AS / AIS.
+    // Reconciliation rule: credit = MAX(26AS, AIS) per deductor.
+
+    "form_26as_uploaded": null,                 // bool
+    // CLASSIFICATION: OPTIONAL
+
+    // ── FTC (per-country, per-source rows for Form 67) ──
+    "foreign_tax_credit": [
+      // ENABLED IF: lock = "ROR" OR (lock = "NR" claiming s.91)
+      {
+        "country": null,                        // ISO 3166-1 alpha-2
+        // CLASSIFICATION: CONDITIONAL
+        "income_type": null,                    // "salary"|"interest"|"dividend"|"cg"|"business"|"other"
+        // CLASSIFICATION: OPTIONAL
+        "foreign_income_in_foreign_ccy": null,
+        // CLASSIFICATION: CONDITIONAL
+        "foreign_tax_in_foreign_ccy": null,
+        // CLASSIFICATION: CONDITIONAL
+        "foreign_currency": null,               // ISO 4217
+        // CLASSIFICATION: CONDITIONAL
+        "conversion_rate": null,
+        // CLASSIFICATION: CONDITIONAL
+        // SBI TT buying rate, last day of preceding month, per Rule 128.
+        "foreign_income_inr": null,             // DERIVED
+        // CLASSIFICATION: DERIVED
+        "foreign_tax_inr": null                 // DERIVED
+        // CLASSIFICATION: DERIVED
+      }
+    ]
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 18 — SURCHARGE BUCKETS (DERIVED — Layer 2 contract)
+  // These are NEVER asked of the user. Engine populates them by re-bucketing
+  // every income field above into named buckets that the surcharge cap and
+  // marginal-relief logic can consume directly.
+  //
+  // CRITICAL: the surcharge cap rule treats CG/dividend at max 15% surcharge
+  // while normal income can hit 25% (above ₹2Cr) or 37% (above ₹5Cr, old regime).
+  // Marginal relief at the ₹2Cr / ₹5Cr boundary requires knowing exactly which
+  // rupees came from which bucket. Without these named outputs, the surcharge
+  // engine cannot be unit-tested.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "surcharge_buckets": {
+
+    "income_normal_slab_inr": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED. Sum of: salary + house property + non-speculative business
+    //                + slab-rate other_sources (interest, dividend, family pension net,
+    //                  buyback deemed dividend).
+
+    "income_stcg_111A_inr": null,
+    // DERIVED. STT-paid equity STCG @ 20%.
+
+    "income_ltcg_112A_inr": null,
+    // DERIVED. STT-paid equity LTCG @ 12.5% above ₹1.25L exemption.
+
+    "income_ltcg_112_inr": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED. Property / unlisted / debt-MF-pre-Apr23 LTCG @ 12.5%.
+
+    "income_stcg_other_inr": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED. Slab-rate STCG (debt MF post Apr 2023, etc.).
+
+    "income_dividend_inr": null,
+    // CLASSIFICATION: DERIVED
+    // DERIVED. Standalone dividend bucket for surcharge cap visibility.
+
+    "income_special_115BB_115BBJ_inr": null,
+    // DERIVED. Lottery, gaming, online gaming — flat 30%.
+
+    "income_vda_115BBH_inr": null,
+    // DERIVED. Crypto / VDA — flat 30%, no set-off, no deductions.
+
+    "speculative_income_inr": null
+    // CLASSIFICATION: OPTIONAL
+    // DERIVED. Intraday — slab rate but ring-fenced for set-off purposes.
+  },
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // SECTION 19 — METADATA
+  // Auto-populated by the system. No user input.
+  // ══════════════════════════════════════════════════════════════════════
+
+  "metadata": {
+
+    "financial_year": null,                     // DERIVED e.g. "FY2025-26"
+    // CLASSIFICATION: DERIVED
+    "request_id": null,                         // DERIVED UUID
+    // CLASSIFICATION: DERIVED
+    "source": null,                             // "onboarding"|"annual_update"|"transaction_trigger"|"ca_review"
+    // CLASSIFICATION: DERIVED
+    "input_completeness": null,                 // "provisional" | "complete"
+    // CLASSIFICATION: DERIVED
+    "cii_confirmed_for_fy": null,
+    // CLASSIFICATION: DERIVED
+    // bool — flips to true once CBDT notifies CII for the FY.
+    // input_completeness cannot reach "complete" for indexation users until this is true.
+    "schema_version": "layer1_india_v5_1",
+    // CLASSIFICATION: DERIVED
+    "created_at": null,                         // ISO 8601
+    // CLASSIFICATION: DERIVED
+    "last_updated_at": null
+    // CLASSIFICATION: DERIVED
+  }
+}
