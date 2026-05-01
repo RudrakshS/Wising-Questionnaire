@@ -266,7 +266,7 @@ export function WizardShell({ session }: Props) {
             <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginBottom: 20 }}>
               {advisoryResult.status} · {advisoryResult.completion_pct}% complete
             </p>
-            {advisoryResult.india_tax?._stub && (
+            {!!(advisoryResult.india_tax as any)?._stub && (
               <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 16,
                 padding: "10px 14px", background: "var(--surface)", borderRadius: "var(--radius-sm)" }}>
                 📐 Math DAG (Layer 2) pending — advisory cards below are live.
