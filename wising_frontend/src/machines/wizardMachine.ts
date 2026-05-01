@@ -19,6 +19,7 @@ export interface WizardContext {
   lock_change_alert: PatchResponse["lock_change_alert"] | null;
   tax_estimate_stale: boolean;
   error: string | null;
+  _pendingPatch?: any;
 }
 
 // ── Events ────────────────────────────────────────────────────────
