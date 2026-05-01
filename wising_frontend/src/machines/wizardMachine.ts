@@ -55,7 +55,7 @@ export const wizardMachine = setup({
       };
     }),
     setError: assign(({ event }) => ({
-      error: String((event as { error: unknown }).error ?? "Unknown error"),
+      error: String((event as any).error ?? "Unknown error"),
     })),
     dismissAlert: assign({ lock_change_alert: null }),
     clearError: assign({ error: null }),
