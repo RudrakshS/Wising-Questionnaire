@@ -4,10 +4,11 @@ FastAPI application entry point with lifespan (asyncpg pool).
 """
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+import asyncpg
 
-from app.database import lifespan
+from app.database import lifespan, get_db
 from app.api.router import router
 from app.config import settings
 
@@ -30,5 +31,10 @@ app.include_router(router, prefix="/api")
 
 
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok", "schema_version": "v5.1"}
+async def health(pool: asyncpg.Pool = Depends(get_db)) -> dict:
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT 1")
+        return {"status": "ok", "database": "connected", "schema_version": "v5.1"}
+    except Exception as e:
+        return {"status": "error", "database": str(e), "schema_version": "v5.1"}
