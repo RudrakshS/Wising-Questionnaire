@@ -74,10 +74,9 @@ export function WizardShell({ session }: Props) {
   });
 
   // Visible questions list (no DERIVED, no array containers, gate-filtered)
-  const visibleFields = ws.fields.filter((f) => {
-    if (f.classification === "DERIVED") return false;
-    if (f.input_type === "array") return false;
-    const sc = ctx[f.schema_name] ?? {};
+  const visibleFields = (ws.fields || []).filter((f) => {
+    const ctx = (ws as any).answers_context || ws.answers || {};
+    const sc = (ctx as any)[f.schema_name] ?? {};
     if (!evaluateGate(f.enabled_if as Record<string, unknown>, sc)) return false;
     if (f.schema_name === "layer1_india" && ws.jurisdiction !== "india_only" && ws.jurisdiction !== "dual") return false;
     if (f.schema_name === "layer1_us" && ws.jurisdiction !== "us_only" && ws.jurisdiction !== "dual") return false;
@@ -272,7 +271,7 @@ export function WizardShell({ session }: Props) {
                 📐 Math DAG (Layer 2) pending — advisory cards below are live.
               </div>
             )}
-            <AdvisoryPanel cards={advisoryResult.advisory_cards} />
+            <AdvisoryPanel cards={advisoryResult.advisory_cards || []} />
             <button className="btn-dismiss" style={{ marginTop: 16 }} onClick={() => setShowAdvisory(false)}>
               Close
             </button>

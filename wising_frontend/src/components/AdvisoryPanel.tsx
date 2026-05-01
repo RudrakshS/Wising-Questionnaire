@@ -33,7 +33,7 @@ export function AdvisoryPanel({ cards }: AdvisoryPanelProps) {
       {cards.map((card) => (
         <div key={card.card_id} className={`advisory-card ${card.severity}`}>
           <div className="advisory-card-title">
-            {SEVERITY_ICON[card.severity] ?? "•"} {card.title}
+            {SEVERITY_ICON[card.severity as string] ?? "•"} {card.title}
           </div>
           <div className="advisory-card-body">{card.description}</div>
         </div>
