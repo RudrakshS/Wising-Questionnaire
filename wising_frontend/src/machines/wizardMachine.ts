@@ -1,4 +1,4 @@
-// Wising Tax Engine — XState v5 Wizard Machine
+// Wising Tax Engine — XState v5 Wizard Machine (v1.0.1-deploy)
 // States mirror WizardPhase enum from Python exactly.
 import { setup, assign, fromPromise } from "xstate";
 import type { WizardSession, PatchResponse, FieldDef } from "@/types/schema";
