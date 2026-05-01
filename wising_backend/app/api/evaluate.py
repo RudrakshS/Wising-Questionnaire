@@ -16,7 +16,7 @@ from app.output.stamper import OutputStamper
 router = APIRouter()
 
 
-@router.post("/api/evaluate/{session_id}/{tax_year_id}")
+@router.post("/evaluate/{session_id}/{tax_year_id}")
 async def evaluate_tax(
     session_id: str,
     tax_year_id: str,

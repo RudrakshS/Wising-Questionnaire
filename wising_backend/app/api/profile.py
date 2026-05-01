@@ -82,7 +82,7 @@ class BatchPatchRequest(BaseModel):
     raw_utterance: Optional[str] = None
 
 
-@router.patch("/api/profile/{session_id}/{tax_year_id}")
+@router.patch("/profile/{session_id}/{tax_year_id}")
 async def patch_profile(
     session_id: str,
     tax_year_id: str,

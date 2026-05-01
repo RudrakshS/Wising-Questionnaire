@@ -34,7 +34,7 @@ class SessionResponse(BaseModel):
     next_required_fields: list[dict]
 
 
-@router.post("/api/session", response_model=SessionResponse, status_code=201)
+@router.post("/session", response_model=SessionResponse, status_code=201)
 async def create_session(
     req: CreateSessionRequest,
     pool: asyncpg.Pool = Depends(get_db),

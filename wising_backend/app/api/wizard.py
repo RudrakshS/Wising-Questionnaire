@@ -14,7 +14,7 @@ from app.repository.field_registry_repo import FieldRegistryRepository
 router = APIRouter()
 
 
-@router.get("/api/wizard/schema")
+@router.get("/wizard/schema")
 async def get_wizard_schema(
     jurisdiction: Optional[str] = Query(None),
     pool: asyncpg.Pool = Depends(get_db),
