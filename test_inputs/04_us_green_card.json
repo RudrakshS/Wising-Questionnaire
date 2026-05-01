@@ -1,0 +1,37 @@
+{
+  "scenario": "US Green Card Holder — Resident Alien",
+  "description": "Non-Indian, Green Card holder, 200 days in US, income in US. Should lock as RESIDENT_ALIEN (us_only).",
+  "expected_us_lock": "RESIDENT_ALIEN",
+  "expected_jurisdiction": "us_only",
+  "layer0": {
+    "is_indian_citizen": false,
+    "is_pio_or_oci": false,
+    "india_days": 0,
+    "has_india_source_income_or_assets": false,
+    "is_us_citizen": false,
+    "has_green_card": true,
+    "was_in_us_this_year": true,
+    "us_days": 200,
+    "has_us_source_income_or_assets": true
+  },
+  "layer1_us": {
+    "us_residency_detail": {
+      "is_us_citizen": false,
+      "has_green_card": true,
+      "us_days_current_year": 200,
+      "green_card_grant_date": "2020-03-15"
+    },
+    "profile": {
+      "date_of_birth": "1992-07-20",
+      "filing_status": "mfj",
+      "ssn_or_itin_type": "ssn",
+      "ssn_or_itin": "987-65-4321",
+      "dependents_count": 2,
+      "spouse_is_us_person": true
+    },
+    "state_residency": {
+      "primary_state_of_residence": "CA",
+      "moved_states_this_year": false
+    }
+  }
+}

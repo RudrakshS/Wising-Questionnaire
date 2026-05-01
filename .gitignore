@@ -1,0 +1,66 @@
+# ── Python ───────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+
+# ── Virtual environments ─────────────────────────────────────────
+.venv/
+venv/
+env/
+.env.local
+
+# ── Secrets — NEVER commit these ─────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Database ─────────────────────────────────────────────────────
+*.sqlite3
+*.db
+*.dump
+
+# ── Node / Next.js ───────────────────────────────────────────────
+node_modules/
+.next/
+out/
+.cache/
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Test / diagnostic scripts (kept local only) ──────────────────
+wising_backend/diagnose.py
+wising_backend/find_bad_labels.py
+wising_backend/find_exact_paths.py
+wising_backend/fix_labels*.py
+wising_backend/get_exact.py
+wising_backend/check_paths.py
+wising_backend/probe_db.py
+wising_backend/test_uuid_lookup.py
+wising_backend/run_ddl.py
+wising_backend/run_seed.py
+
+# ── OS / editor ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+
+# ── Logs ─────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Agent system dirs ─────────────────────────────────────────────
+.gemini/
+.gsd/
+_raw_docs/
+gsd-template/

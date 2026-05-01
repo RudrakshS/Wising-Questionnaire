@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS field_registry (
     classification  TEXT NOT NULL CHECK (classification IN ('REQUIRED','CONDITIONAL','OPTIONAL','DERIVED')),
     friendly_label  TEXT NOT NULL,
     input_type      TEXT NOT NULL CHECK (input_type IN ('integer','boolean','enum','date','currency','string','array')),
+    enum_values     JSONB,
     enabled_if      JSONB,
     default_value   JSONB,
     default_label   TEXT,

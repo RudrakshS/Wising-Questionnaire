@@ -287,9 +287,9 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB:       wising
-      POSTGRES_USER:     wising
-      POSTGRES_PASSWORD: wising_dev
+      POSTGRES_DB:       wising_tax
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports: ["5432:5432"]
     volumes: [pg_data:/var/lib/postgresql/data]
 
@@ -313,7 +313,7 @@ volumes: {pg_data: {}}
 
 ### `TAX/.env.example`
 ```
-DATABASE_URL=postgresql://wising:wising_dev@localhost:5432/wising
+DATABASE_URL=postgresql://postgres:<your_password>@localhost:5432/wising_tax
 SCHEMA_DIR=/specs
 DEBUG=true
 LOG_LEVEL=INFO

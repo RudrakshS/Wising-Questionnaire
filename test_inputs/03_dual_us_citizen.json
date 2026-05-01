@@ -1,0 +1,48 @@
+{
+  "scenario": "US Citizen — Dual Jurisdiction",
+  "description": "US citizen AND Indian citizen, 150 days in India, 180 days in US. Should trigger dual jurisdiction with india_lock=NR, us_lock=US_CITIZEN.",
+  "expected_india_lock": "NR",
+  "expected_us_lock": "US_CITIZEN",
+  "expected_jurisdiction": "dual",
+  "layer0": {
+    "is_indian_citizen": true,
+    "is_pio_or_oci": false,
+    "india_days": 150,
+    "has_india_source_income_or_assets": true,
+    "is_us_citizen": true,
+    "has_green_card": false,
+    "was_in_us_this_year": true,
+    "us_days": 180,
+    "has_us_source_income_or_assets": true
+  },
+  "layer1_india": {
+    "residency_detail": {
+      "days_in_india_preceding_4_years_gte_365": true,
+      "is_departure_year": false,
+      "came_on_visit_to_india_pio_citizen": false,
+      "nr_years_last_10_gte_9": false,
+      "days_in_india_last_7_years_lte_729": true,
+      "india_source_income_above_15l": false,
+      "employment_or_crew_status": "none"
+    },
+    "profile": {
+      "date_of_birth": "1988-11-05",
+      "pan": "MNOPQ3456R",
+      "pan_aadhaar_linked": true,
+      "tax_regime": "NEW"
+    }
+  },
+  "layer1_us": {
+    "us_residency_detail": {
+      "is_us_citizen": true,
+      "has_green_card": false,
+      "us_days_current_year": 180
+    },
+    "profile": {
+      "date_of_birth": "1988-11-05",
+      "filing_status": "single",
+      "ssn_or_itin_type": "ssn",
+      "ssn_or_itin": "123-45-6789"
+    }
+  }
+}
