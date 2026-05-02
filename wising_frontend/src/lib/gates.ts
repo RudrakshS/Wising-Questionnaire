@@ -48,6 +48,8 @@ export function evaluateGate(gate: unknown, context: Context): boolean {
       }
       return actual === expected;
     case "neq":
+      // When expected is null, treat both null AND undefined as "null" (equal)
+      if (expected === null) return actual !== null && actual !== undefined;
       return actual !== expected;
     case "gt":
       return typeof actual === "number" && actual > (expected as number);

@@ -153,7 +153,7 @@ LABEL_OVERRIDES: dict[str, str] = {
     "layer0.was_in_us_this_year":                    "Were you physically present in the US at any point this calendar year?",
     "layer0.us_days":                                "How many days were you in the US this calendar year?",
     "layer0.has_us_source_income_or_assets":         "Do you have any US-source income or US-situs assets this year?",
-    "layer0.liable_to_tax_in_another_country":       "Are you personally liable to pay income tax in any other country this year?",
+    "layer0.liable_to_tax_in_another_country":       "Are you personally liable to pay income tax in any country other than India?",
     "layer0.left_india_for_employment_this_year":    "Did you leave India this year specifically for employment abroad or as a ship crew member?",
     "layer0.india_flag":                             "[DERIVED] India taxing rights flag",
     "layer0.us_flag":                                "[DERIVED] US taxing rights flag",
@@ -177,24 +177,24 @@ LABEL_OVERRIDES: dict[str, str] = {
     "layer1_india.residency_detail.liable_to_tax_in_another_country_being_indian_citizen": "[DERIVED] Deemed Resident blocker",
     "layer1_india.residency_detail.final_india_residency_status": "[DERIVED] India Residency Lock (NR / RNOR / ROR)",
     # ── Layer 1 India: DTAA ──
-    "layer1_india.dtaa.tax_residency_country":       "Which country is your current tax home (ISO code, e.g. US)?",
+    "layer1_india.dtaa.tax_residency_country":       "Which country is your current tax home (e.g. US, AE, GB)?",
     "layer1_india.dtaa.is_us_resident_for_dtaa":     "Are you a US tax resident for DTAA purposes?",
-    "layer1_india.dtaa.trc_status":                  "Do you have a valid Tax Residency Certificate (TRC)?",
-    "layer1_india.dtaa.has_permanent_establishment_in_india": "Do you have a fixed place of business or dependent agent in India?",
-    "layer1_india.dtaa.treaty_elections":             "Treaty rate elections (per income stream)",
-    "layer1_india.dtaa.mfn_clause_invoked":          "Are you invoking the Most Favoured Nation (MFN) clause?",
+    "layer1_india.dtaa.trc_status":                  "Do you have a valid Tax Residency Certificate (TRC)? ⓘ",
+    "layer1_india.dtaa.has_permanent_establishment_in_india": "Do you have a fixed place of business or dependent agent in India? ⓘ",
+    "layer1_india.dtaa.treaty_elections":             "Select the income types you earn from India",
+    "layer1_india.dtaa.mfn_clause_invoked":          "Are you invoking the Most Favoured Nation (MFN) clause? ⓘ",
     # ── Layer 1 India: Compliance Docs ──
-    "layer1_india.compliance_docs.trc.validity_start_date": "TRC validity start date",
+    "layer1_india.compliance_docs.trc.validity_start_date": "TRC validity start date ⓘ",
     "layer1_india.compliance_docs.trc.validity_end_date": "TRC validity end date",
     "layer1_india.compliance_docs.trc.document_uploaded": "Has the TRC document been uploaded/verified?",
-    "layer1_india.compliance_docs.form_10f.is_filed": "Has Form 10F been filed electronically?",
+    "layer1_india.compliance_docs.form_10f.is_filed": "Has Form 10F been filed electronically? ⓘ",
     "layer1_india.compliance_docs.form_10f.ack_number": "Form 10F acknowledgement number",
-    "layer1_india.compliance_docs.section_197_cert.is_available": "Do you have a Section 197 lower TDS certificate?",
-    "layer1_india.compliance_docs.section_197_cert.rate": "Section 197 certificate rate (e.g. 0.05 for 5%)",
-    "layer1_india.compliance_docs.section_197_cert.validity_start_date": "Section 197 certificate validity start date",
-    "layer1_india.compliance_docs.section_197_cert.validity_end_date": "Section 197 certificate validity end date",
-    "layer1_india.compliance_docs.section_197_cert.covered_income_types": "Income types covered by Section 197 certificate",
-    "layer1_india.compliance_docs.chapter_xiia_elected": "Have you ever elected the Chapter XII-A special tax regime?",
+    "layer1_india.compliance_docs.section_197_cert.is_available": "Do you have a lower TDS certificate? ⓘ",
+    "layer1_india.compliance_docs.section_197_cert.rate": "Certificate TDS rate (e.g. 0.05 for 5%)",
+    "layer1_india.compliance_docs.section_197_cert.validity_start_date": "Lower TDS certificate validity start date",
+    "layer1_india.compliance_docs.section_197_cert.validity_end_date": "Lower TDS certificate validity end date",
+    "layer1_india.compliance_docs.section_197_cert.covered_income_types": "Income types covered by lower TDS certificate",
+    "layer1_india.compliance_docs.chapter_xiia_elected": "Have you ever elected the Chapter XII-A special tax regime? ⓘ",
     # ── Layer 1 India: Bank Accounts ──
     "layer1_india.bank_accounts":                    "Indian bank accounts",
     # ── Layer 1 India: NRO Repatriation ──
@@ -266,10 +266,10 @@ LABEL_OVERRIDES: dict[str, str] = {
     "layer1_us.us_residency_detail.us_days_current_year": "How many days were you in the US in calendar year 2026?",
     "layer1_us.us_residency_detail.us_days_minus_1_year": "How many days were you in the US in calendar year 2025?",
     "layer1_us.us_residency_detail.us_days_minus_2_years": "How many days were you in the US in calendar year 2024?",
-    "layer1_us.us_residency_detail.exempt_individual_status": "Are you an exempt individual for SPT purposes?",
-    "layer1_us.us_residency_detail.closer_connection_claim": "Do you claim a closer connection to a foreign country (Form 8840)?",
-    "layer1_us.us_residency_detail.first_year_choice_election": "Are you making a first-year choice election (§7701(b)(4))?",
-    "layer1_us.us_residency_detail.s6013g_joint_election": "Is your NRA spouse making a §6013(g) joint-filing election?",
+    "layer1_us.us_residency_detail.exempt_individual_status": "Are you an exempt individual for the Substantial Presence Test? ⓘ",
+    "layer1_us.us_residency_detail.closer_connection_claim": "Do you claim a closer connection to a foreign country? ⓘ",
+    "layer1_us.us_residency_detail.first_year_choice_election": "Are you making a first-year choice election to voluntarily become US resident this year? ⓘ",
+    "layer1_us.us_residency_detail.s6013g_joint_election": "Is your NRA spouse making a joint-filing election? ⓘ",
 
     # ── Layer 1 US — State Residency ──
     "layer1_us.state_residency.primary_state_of_residence": "What is your primary US state of residence?",
@@ -445,21 +445,70 @@ GATE_OVERRIDES: dict[str, dict | None] = {
     "layer1_india.residency_detail.india_source_income_above_15l": {
         "field": "layer0.has_india_source_income_or_assets", "op": "eq", "value": True
     },
-    # DTAA section: lock = NR
+    # DTAA section: ENABLED IF liable_to_tax_in_another_country = true (per updated JSONC)
     "layer1_india.dtaa.tax_residency_country": {
-        "field": "layer1_india.residency_detail.final_india_residency_status",
-        "op": "eq", "value": "NR"
+        "field": "layer0.liable_to_tax_in_another_country", "op": "eq", "value": True
     },
     "layer1_india.dtaa.is_us_resident_for_dtaa": {
         "field": "layer1_india.dtaa.tax_residency_country", "op": "eq", "value": "US"
     },
     "layer1_india.dtaa.trc_status": {
+        "field": "layer0.liable_to_tax_in_another_country", "op": "eq", "value": True
+    },
+    "layer1_india.dtaa.has_permanent_establishment_in_india": {
+        "field": "layer0.liable_to_tax_in_another_country", "op": "eq", "value": True
+    },
+    # DTAA treaty_elections & mfn: enabled if tax_residency_country is set
+    "layer1_india.dtaa.treaty_elections": {
+        "field": "layer1_india.dtaa.tax_residency_country", "op": "neq", "value": None
+    },
+    "layer1_india.dtaa.mfn_clause_invoked": {
+        "field": "layer1_india.dtaa.tax_residency_country", "op": "neq", "value": None
+    },
+    # Compliance Docs: TRC sub-fields enabled if trc_status = true
+    "layer1_india.compliance_docs.trc.validity_start_date": {
+        "field": "layer1_india.dtaa.trc_status", "op": "eq", "value": True
+    },
+    "layer1_india.compliance_docs.trc.validity_end_date": {
+        "field": "layer1_india.dtaa.trc_status", "op": "eq", "value": True
+    },
+    "layer1_india.compliance_docs.trc.document_uploaded": {
+        "field": "layer1_india.dtaa.trc_status", "op": "eq", "value": True
+    },
+    # Form 10F: enabled if trc_status = true (needed alongside TRC)
+    "layer1_india.compliance_docs.form_10f.is_filed": {
+        "field": "layer1_india.dtaa.trc_status", "op": "eq", "value": True
+    },
+    "layer1_india.compliance_docs.form_10f.ack_number": {
+        "field": "layer1_india.compliance_docs.form_10f.is_filed", "op": "eq", "value": True
+    },
+    # Section 197 cert: enabled if lock = NR (lower TDS for NRIs)
+    "layer1_india.compliance_docs.section_197_cert.is_available": {
         "field": "layer1_india.residency_detail.final_india_residency_status",
         "op": "eq", "value": "NR"
     },
-    "layer1_india.dtaa.has_permanent_establishment_in_india": {
-        "field": "layer1_india.residency_detail.final_india_residency_status",
-        "op": "eq", "value": "NR"
+    "layer1_india.compliance_docs.section_197_cert.rate": {
+        "field": "layer1_india.compliance_docs.section_197_cert.is_available",
+        "op": "eq", "value": True
+    },
+    "layer1_india.compliance_docs.section_197_cert.validity_start_date": {
+        "field": "layer1_india.compliance_docs.section_197_cert.is_available",
+        "op": "eq", "value": True
+    },
+    "layer1_india.compliance_docs.section_197_cert.validity_end_date": {
+        "field": "layer1_india.compliance_docs.section_197_cert.is_available",
+        "op": "eq", "value": True
+    },
+    "layer1_india.compliance_docs.section_197_cert.covered_income_types": {
+        "field": "layer1_india.compliance_docs.section_197_cert.is_available",
+        "op": "eq", "value": True
+    },
+    # Chapter XII-A: enabled if lock = NR OR nr_years_last_10_gte_9 = true
+    "layer1_india.compliance_docs.chapter_xiia_elected": {
+        "or": [
+            {"field": "layer1_india.residency_detail.final_india_residency_status", "op": "eq", "value": "NR"},
+            {"field": "layer1_india.residency_detail.nr_years_last_10_gte_9", "op": "eq", "value": True},
+        ]
     },
     # LRS outbound: lock = ROR only
     "layer1_india.lrs_outbound": {

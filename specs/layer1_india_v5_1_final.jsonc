@@ -197,13 +197,14 @@
     // super senior (80+) advance tax exemption, slab breakpoints.
 
     "pan": null,
-    // CLASSIFICATION: REQUIRED
+    // CLASSIFICATION: OPTIONAL
     // string (10 chars, AAAAA9999A format)
     // Permanent Account Number. Required for all India tax filings.
 
     "pan_aadhaar_linked": null,
-    // CLASSIFICATION: REQUIRED
+    // CLASSIFICATION: OPTIONAL
     // bool
+    // ENABLE IF pan
     // Is your PAN linked to Aadhaar?
     // CRITICAL: an unlinked PAN is INOPERATIVE — TDS doubles to 20% on most
     // streams under s.206AA, refunds are blocked, and ITR filing may be rejected.
@@ -598,14 +599,14 @@
 
   // ══════════════════════════════════════════════════════════════════════
   // SECTION 3 — DTAA INPUT
-  // Screen 2B | ENABLED IF: residency_detail.final_india_residency_status = "NR"
+  // Screen 2B | ENABLED IF: residency_detail.liable_to_tax_in_another_country_being_indian_citizen = true
   // ══════════════════════════════════════════════════════════════════════
 
   "dtaa": {
 
     "tax_residency_country": null,
     // CLASSIFICATION: CONDITIONAL
-    // ISO 3166-1 alpha-2 e.g. "US" | "AE" | "GB" | "SG" | "CA"
+    // ISO 3166-1 alpha-2 e.g. "US" | "AE" | "GB" | "SG" | "CA" | "IN"
     // Country where you currently pay personal income tax (your tax home).
     // Drives the entire treaty rate table.
 
@@ -633,13 +634,17 @@
     // CLASSIFICATION: OPTIONAL
       // Array — per-income-stream treaty rate election.
       // Engine picks lower of (domestic, treaty) per stream rather than per taxpayer.
+      // ENABLE income_type BELOW QUESTIONS
       {
-        "income_type": null,        // "interest" | "dividend" | "royalty" | "fts" | "capital_gains"
+        "income_type": null,        
+        // ENUM: "interest" | "dividend" | "royalty" | "fts" | "capital_gains"
         // CLASSIFICATION: OPTIONAL
         "elected_rate": null,       // decimal e.g. 0.15
         // CLASSIFICATION: OPTIONAL
+        // FETCH FROM CONFIG
         "treaty_article": null      // string e.g. "Art. 11(2)(a) India-US DTAA"
         // CLASSIFICATION: OPTIONAL
+        // FETCH FROM CONFIG
       }
     ],
 

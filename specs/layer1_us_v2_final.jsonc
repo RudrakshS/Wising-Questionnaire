@@ -162,7 +162,7 @@
 
     "exempt_individual_status": null,
     // CLASSIFICATION: REQUIRED
-    // "none" | "f_student" | "j_scholar" | "g_diplomat" | "professional_athlete"
+    // "none" | "f-1_student" | "j-1_research_scholar/teacher" | "g-1_diplomat" | "p1-a_professional_athlete"
     // Days as an exempt individual do NOT count toward SPT.
     // F/J students: typically exempt for first 5 calendar years.
     // J scholars/teachers: typically exempt for 2 of last 6 calendar years.

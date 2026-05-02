@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { api } from "@/lib/api";
 import { evaluateGate } from "@/lib/gates";
-import { FieldInput } from "@/components/FieldInput";
+import { FieldInput, getInfoHint } from "@/components/FieldInput";
 import { LockAlert } from "@/components/LockAlert";
 import { AdvisoryPanel } from "@/components/AdvisoryPanel";
 import type {
@@ -361,7 +361,15 @@ export function WizardShell({ session }: Props) {
               </span>
             </div>
 
-            <div className="question-main">{currentField.friendly_label}</div>
+            <div className="question-main">{currentField.friendly_label.replace(/ \u24d8$/, "")}</div>
+
+            {/* Info hint tooltip for uncommon terms */}
+            {getInfoHint(currentField) && (
+              <div className="info-hint">
+                <span className="info-icon">ⓘ</span>
+                <span className="info-text">{getInfoHint(currentField)}</span>
+              </div>
+            )}
 
             <FieldInput
               field={currentField}
