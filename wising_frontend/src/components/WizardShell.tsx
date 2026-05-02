@@ -62,24 +62,30 @@ export function WizardShell({ session }: Props) {
     api.getSchema(ws.jurisdiction).then((d) => setWs((p) => ({ ...p, fields: d.fields }))).catch(console.error);
   }, [ws.jurisdiction]);
 
-  // Build gate context
-  const ctx: Record<string, Record<string, unknown>> = { layer0: {}, layer1_india: {}, layer1_us: {} };
+  // Build gate context as nested object: { layer0: { is_indian_citizen: true, ... }, layer1_india: { residency_detail: { days_in_india_current_year: 200 } } }
+  const gateCtx: Record<string, unknown> = {};
   Object.entries(ws.answers).forEach(([path, val]) => {
+    // Build nested structure so resolvePath("layer0.is_indian_citizen") works
     const parts = path.split(".");
-    const schema = parts[0];
-    if (schema in ctx) {
-      ctx[schema][parts.slice(1).join(".")] = val;
-      ctx[schema][parts[parts.length - 1]] = val;
+    let cur: Record<string, unknown> = gateCtx;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!(parts[i] in cur) || typeof cur[parts[i]] !== "object") {
+        cur[parts[i]] = {};
+      }
+      cur = cur[parts[i]] as Record<string, unknown>;
     }
+    cur[parts[parts.length - 1]] = val;
   });
 
   // Visible questions list (no DERIVED, no array containers, gate-filtered)
   const visibleFields = (ws.fields || []).filter((f) => {
-    const ctx = (ws as any).answers_context || ws.answers || {};
-    const sc = (ctx as any)[f.schema_name] ?? {};
-    if (!evaluateGate(f.enabled_if as Record<string, unknown>, sc)) return false;
+    // Skip DERIVED fields (engine-computed, never asked)
+    if (f.classification === "DERIVED") return false;
+    // Jurisdiction gating: only show layer1 fields when jurisdiction matches
     if (f.schema_name === "layer1_india" && ws.jurisdiction !== "india_only" && ws.jurisdiction !== "dual") return false;
     if (f.schema_name === "layer1_us" && ws.jurisdiction !== "us_only" && ws.jurisdiction !== "dual") return false;
+    // Gate evaluation: pass the full nested context so cross-layer references work
+    if (!evaluateGate(f.enabled_if as Record<string, unknown>, gateCtx as Record<string, unknown>)) return false;
     return true;
   });
 

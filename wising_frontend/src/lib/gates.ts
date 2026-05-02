@@ -24,6 +24,9 @@ export function evaluateGate(gate: unknown, context: Context): boolean {
 
   const g = gate as Record<string, unknown>;
 
+  // If gate has _parse_error, treat as "cannot evaluate" → hide field
+  if (g._parse_error) return false;
+
   if ("and" in g && Array.isArray(g.and)) {
     return (g.and as unknown[]).every((c) => evaluateGate(c, context));
   }
@@ -54,6 +57,8 @@ export function evaluateGate(gate: unknown, context: Context): boolean {
       return typeof actual === "number" && actual < (expected as number);
     case "in":
       return Array.isArray(expected) && expected.includes(actual);
+    case "not_in":
+      return Array.isArray(expected) && !expected.includes(actual) && actual !== null && actual !== undefined;
     case "contains":
       // GAP-003
       return Array.isArray(actual) && actual.includes(expected);

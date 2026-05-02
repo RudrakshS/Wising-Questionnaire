@@ -143,20 +143,185 @@ SECTION_ORDER_MAPS: dict[str, dict[str, int]] = {
 # Human-readable labels for fields that lack a Q-line comment.
 # The seeder falls back to humanizing the field name if not found here.
 LABEL_OVERRIDES: dict[str, str] = {
+    # ── Layer 0 ──
     "layer0.is_indian_citizen":                      "Are you an Indian citizen?",
-    "layer0.is_pio_or_oci":                          "Are you a PIO or OCI cardholder?",
-    "layer0.india_days":                             "Days in India this tax year (Apr 2025–Mar 2026)",
-    "layer0.has_india_source_income_or_assets":      "Any India-source income or Indian assets this year?",
+    "layer0.is_pio_or_oci":                          "Are you a Person of Indian Origin (PIO) or OCI cardholder?",
+    "layer0.india_days":                             "How many days were you physically present in India this tax year (Apr 2025–Mar 2026)?",
+    "layer0.has_india_source_income_or_assets":      "Do you have any India-source income or Indian assets this year?",
     "layer0.is_us_citizen":                          "Are you a US citizen?",
-    "layer0.has_green_card":                         "Do you hold a valid US Green Card?",
-    "layer0.was_in_us_this_year":                    "Were you in the US at any point this calendar year?",
+    "layer0.has_green_card":                         "Do you hold a valid US Green Card (Form I-551)?",
+    "layer0.was_in_us_this_year":                    "Were you physically present in the US at any point this calendar year?",
     "layer0.us_days":                                "How many days were you in the US this calendar year?",
-    "layer0.has_us_source_income_or_assets":         "Any US-source income or US-situs assets this year?",
-    "layer0.liable_to_tax_in_another_country":       "Are you liable to income tax in any other country?",
-    "layer0.left_india_for_employment_this_year":    "Did you leave India this year for employment abroad?",
+    "layer0.has_us_source_income_or_assets":         "Do you have any US-source income or US-situs assets this year?",
+    "layer0.liable_to_tax_in_another_country":       "Are you personally liable to pay income tax in any other country this year?",
+    "layer0.left_india_for_employment_this_year":    "Did you leave India this year specifically for employment abroad or as a ship crew member?",
     "layer0.india_flag":                             "[DERIVED] India taxing rights flag",
     "layer0.us_flag":                                "[DERIVED] US taxing rights flag",
     "layer0.jurisdiction":                           "[DERIVED] Jurisdiction routing output",
+    # ── Layer 1 India: Profile ──
+    "layer1_india.profile.date_of_birth":            "What is your date of birth?",
+    "layer1_india.profile.pan":                      "What is your PAN (Permanent Account Number)?",
+    "layer1_india.profile.pan_aadhaar_linked":       "Is your PAN linked to Aadhaar?",
+    "layer1_india.profile.tax_regime":               "Which tax regime do you prefer? (New or Old)",
+    # ── Layer 1 India: Residency Detail ──
+    "layer1_india.residency_detail.days_in_india_current_year": "How many days were you physically present in India this FY?",
+    "layer1_india.residency_detail.days_in_india_preceding_4_years_gte_365": "In the preceding 4 FYs combined, were you in India for 365+ days total?",
+    "layer1_india.residency_detail.employment_or_crew_status": "What is your employment/crew status for the departure from India?",
+    "layer1_india.residency_detail.is_departure_year": "Is this the first FY you left India for this employment/crew role?",
+    "layer1_india.residency_detail.ship_nationality": "What is the nationality of the ship you serve on?",
+    "layer1_india.residency_detail.came_on_visit_to_india_pio_citizen": "Did you come to India on a visit, being a PIO or Indian citizen?",
+    "layer1_india.residency_detail.nr_years_last_10_gte_9": "In the last 10 FYs, were you Non-Resident for 9 or more years?",
+    "layer1_india.residency_detail.days_in_india_last_7_years_lte_729": "In the preceding 7 FYs combined, were you in India for 729 days or fewer?",
+    "layer1_india.residency_detail.india_source_income_above_15l": "Is your India-source income above ₹15 lakh this tax year?",
+    "layer1_india.residency_detail.current_year_trip_log": "India trip log (arrival/departure dates)",
+    "layer1_india.residency_detail.liable_to_tax_in_another_country_being_indian_citizen": "[DERIVED] Deemed Resident blocker",
+    "layer1_india.residency_detail.final_india_residency_status": "[DERIVED] India Residency Lock (NR / RNOR / ROR)",
+    # ── Layer 1 India: DTAA ──
+    "layer1_india.dtaa.tax_residency_country":       "Which country is your current tax home (ISO code, e.g. US)?",
+    "layer1_india.dtaa.is_us_resident_for_dtaa":     "Are you a US tax resident for DTAA purposes?",
+    "layer1_india.dtaa.trc_status":                  "Do you have a valid Tax Residency Certificate (TRC)?",
+    "layer1_india.dtaa.has_permanent_establishment_in_india": "Do you have a fixed place of business or dependent agent in India?",
+    "layer1_india.dtaa.treaty_elections":             "Treaty rate elections (per income stream)",
+    "layer1_india.dtaa.mfn_clause_invoked":          "Are you invoking the Most Favoured Nation (MFN) clause?",
+    # ── Layer 1 India: Compliance Docs ──
+    "layer1_india.compliance_docs.trc.validity_start_date": "TRC validity start date",
+    "layer1_india.compliance_docs.trc.validity_end_date": "TRC validity end date",
+    "layer1_india.compliance_docs.trc.document_uploaded": "Has the TRC document been uploaded/verified?",
+    "layer1_india.compliance_docs.form_10f.is_filed": "Has Form 10F been filed electronically?",
+    "layer1_india.compliance_docs.form_10f.ack_number": "Form 10F acknowledgement number",
+    "layer1_india.compliance_docs.section_197_cert.is_available": "Do you have a Section 197 lower TDS certificate?",
+    "layer1_india.compliance_docs.section_197_cert.rate": "Section 197 certificate rate (e.g. 0.05 for 5%)",
+    "layer1_india.compliance_docs.section_197_cert.validity_start_date": "Section 197 certificate validity start date",
+    "layer1_india.compliance_docs.section_197_cert.validity_end_date": "Section 197 certificate validity end date",
+    "layer1_india.compliance_docs.section_197_cert.covered_income_types": "Income types covered by Section 197 certificate",
+    "layer1_india.compliance_docs.chapter_xiia_elected": "Have you ever elected the Chapter XII-A special tax regime?",
+    # ── Layer 1 India: Bank Accounts ──
+    "layer1_india.bank_accounts":                    "Indian bank accounts",
+    # ── Layer 1 India: NRO Repatriation ──
+    "layer1_india.nro_repatriation.cumulative_repatriated_usd_this_fy": "Total USD repatriated from NRO this FY",
+    "layer1_india.nro_repatriation.pending_repatriation_inr": "Pending NRO repatriation amount (INR)",
+    "layer1_india.nro_repatriation.tds_deducted_on_nro_balance": "Has TDS been deducted on NRO balance?",
+    # ── Layer 1 India: Property ──
+    "layer1_india.property.has_indian_property_transaction": "Have you sold or are you selling Indian immovable property this FY?",
+    "layer1_india.property.properties":              "Property transaction details",
+    # ── Layer 1 India: Financial Holdings ──
+    "layer1_india.financial_holdings.has_financial_transactions": "Did you have any financial transactions (stocks, MFs, bonds) this FY?",
+    "layer1_india.financial_holdings.transactions":   "Financial transaction details",
+    # ── Layer 1 India: Commodities ──
+    "layer1_india.commodities.has_commodity_transactions": "Did you have any commodity transactions (gold, silver, SGB) this FY?",
+    "layer1_india.commodities.transactions":          "Commodity transaction details",
+    # ── Layer 1 India: Unlisted Equity ──
+    "layer1_india.unlisted_equity.has_unlisted_equity_transaction": "Did you sell any unlisted/private company shares this FY?",
+    "layer1_india.unlisted_equity.transactions":      "Unlisted equity transaction details",
+    # ── Layer 1 India: Share Buyback ──
+    "layer1_india.share_buyback.has_buyback_transaction": "Were any of your shares bought back by a company this FY?",
+    "layer1_india.share_buyback.transactions":        "Share buyback transaction details",
+    # ── Layer 1 India: Domestic Income — Salary ──
+    "layer1_india.domestic_income.salary.has_salary_income": "Do you have salary income this FY?",
+    "layer1_india.domestic_income.salary.gross_salary_inr": "Gross salary received (INR)",
+    "layer1_india.domestic_income.salary.exempt_allowances_inr": "Total exempt allowances (INR)",
+    "layer1_india.domestic_income.salary.hra_received_inr": "HRA received (INR)",
+    "layer1_india.domestic_income.salary.rent_paid_inr": "Rent paid during the year (INR)",
+    "layer1_india.domestic_income.salary.is_metro_city": "Is your place of employment in a metro city?",
+    "layer1_india.domestic_income.salary.basic_da_inr": "Basic salary + DA (INR)",
+    "layer1_india.domestic_income.salary.lta_claimed_inr": "LTA claimed (INR)",
+    "layer1_india.domestic_income.salary.perquisites_inr": "Perquisites value (INR)",
+    "layer1_india.domestic_income.salary.esop_perquisite_inr": "ESOP perquisite value (INR)",
+    "layer1_india.domestic_income.salary.professional_tax_inr": "Professional tax paid (INR)",
+    "layer1_india.domestic_income.salary.employer_nps_contribution_inr": "Employer NPS contribution (INR)",
+    "layer1_india.domestic_income.salary.prior_employer_salary_inr": "Salary from prior employer (INR, if switched jobs mid-year)",
+    # ── Layer 1 India: Domestic Income — House Property ──
+    "layer1_india.domestic_income.house_property.has_house_property_income": "Do you have income from house property?",
+    # ── Layer 1 India: Domestic Income — Business ──
+    "layer1_india.domestic_income.business_income.has_business_or_fo_income": "Do you have business, professional, or F&O income?",
+    "layer1_india.domestic_income.business_income.nature_of_business": "Nature of your business/profession (select all that apply)",
+    "layer1_india.domestic_income.business_income.presumptive_scheme": "Presumptive taxation scheme (select all that apply)",
+    "layer1_india.domestic_income.business_income.profession_type": "Type of profession (for s.44ADA)",
+    "layer1_india.domestic_income.business_income.s115BAC_optout_history": "Have you previously opted out of the New Tax Regime?",
+    "layer1_india.domestic_income.business_income.turnover_inr": "Total gross turnover/receipts for the FY (INR)",
+    "layer1_india.domestic_income.business_income.digital_receipts_inr": "Receipts via banking channels (INR)",
+    "layer1_india.domestic_income.business_income.cash_receipts_inr": "Cash receipts (INR)",
+    "layer1_india.domestic_income.business_income.gross_receipts_inr": "Gross professional receipts (INR)",
+    "layer1_india.domestic_income.business_income.s44AD_last_exit_ay": "Last AY you opted out of s.44AD (if any)",
+    "layer1_india.domestic_income.business_income.s44AD_opted_current_year": "Are you electing s.44AD for the current year?",
+    "layer1_india.domestic_income.business_income.goods_vehicles": "Goods transport vehicles (for s.44AE)",
+    "layer1_india.domestic_income.business_income.opening_stock_inr": "Opening stock value at 1 April (INR)",
+    "layer1_india.domestic_income.business_income.closing_stock_inr": "Closing stock value at 31 March (INR)",
+    "layer1_india.domestic_income.business_income.gst_registration_status": "GST registration status",
+    "layer1_india.domestic_income.business_income.gst_collected_inr": "GST collected from customers this FY (INR)",
+}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# GATE OVERRIDES — Complex enabled_if conditions that the auto-parser
+# cannot handle. These are manually specified as structured JSONB.
+# ══════════════════════════════════════════════════════════════════════
+
+GATE_OVERRIDES: dict[str, dict | None] = {
+    # employment_or_crew_status: ALL 5 conditions must be true
+    "layer1_india.residency_detail.employment_or_crew_status": {
+        "and": [
+            {"field": "layer0.left_india_for_employment_this_year", "op": "eq", "value": True},
+            {"field": "layer1_india.residency_detail.days_in_india_current_year", "op": "gte", "value": 60},
+            {"field": "layer1_india.residency_detail.days_in_india_current_year", "op": "lt", "value": 182},
+            {"field": "layer1_india.residency_detail.days_in_india_preceding_4_years_gte_365", "op": "eq", "value": True},
+            {"field": "layer0.is_indian_citizen", "op": "eq", "value": True},
+        ]
+    },
+    # is_departure_year: employment_or_crew_status NOT IN [none, null]
+    "layer1_india.residency_detail.is_departure_year": {
+        "field": "layer1_india.residency_detail.employment_or_crew_status",
+        "op": "not_in", "value": ["none"]
+    },
+    # ship_nationality: employment_or_crew_status IN [indian_ship_crew, foreign_ship_crew]
+    "layer1_india.residency_detail.ship_nationality": {
+        "field": "layer1_india.residency_detail.employment_or_crew_status",
+        "op": "in", "value": ["indian_ship_crew", "foreign_ship_crew"]
+    },
+    # came_on_visit: employment = "none" (only in the 60-181 + P4Y path)
+    "layer1_india.residency_detail.came_on_visit_to_india_pio_citizen": {
+        "field": "layer1_india.residency_detail.employment_or_crew_status",
+        "op": "eq", "value": "none"
+    },
+    # nr_years_last_10: days >= 182 OR came_on_visit = false
+    "layer1_india.residency_detail.nr_years_last_10_gte_9": {
+        "or": [
+            {"field": "layer1_india.residency_detail.days_in_india_current_year", "op": "gte", "value": 182},
+            {"field": "layer1_india.residency_detail.came_on_visit_to_india_pio_citizen", "op": "eq", "value": False},
+        ]
+    },
+    # days_in_india_last_7_years: same OR gate as above
+    "layer1_india.residency_detail.days_in_india_last_7_years_lte_729": {
+        "or": [
+            {"field": "layer1_india.residency_detail.days_in_india_current_year", "op": "gte", "value": 182},
+            {"field": "layer1_india.residency_detail.came_on_visit_to_india_pio_citizen", "op": "eq", "value": False},
+        ]
+    },
+    # india_source_income_above_15l: Layer 0 has_india_source_income = true
+    "layer1_india.residency_detail.india_source_income_above_15l": {
+        "field": "layer0.has_india_source_income_or_assets", "op": "eq", "value": True
+    },
+    # DTAA section: lock = NR
+    "layer1_india.dtaa.tax_residency_country": {
+        "field": "layer1_india.residency_detail.final_india_residency_status",
+        "op": "eq", "value": "NR"
+    },
+    "layer1_india.dtaa.is_us_resident_for_dtaa": {
+        "field": "layer1_india.dtaa.tax_residency_country", "op": "eq", "value": "US"
+    },
+    "layer1_india.dtaa.trc_status": {
+        "field": "layer1_india.residency_detail.final_india_residency_status",
+        "op": "eq", "value": "NR"
+    },
+    "layer1_india.dtaa.has_permanent_establishment_in_india": {
+        "field": "layer1_india.residency_detail.final_india_residency_status",
+        "op": "eq", "value": "NR"
+    },
+    # LRS outbound: lock = ROR only
+    "layer1_india.lrs_outbound": {
+        "field": "layer1_india.residency_detail.final_india_residency_status",
+        "op": "eq", "value": "ROR"
+    },
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -320,12 +485,24 @@ class CommentExtractor:
                         meta.input_type_hint = tm.group(1).lower()
 
                 # First non-metadata comment line → label fallback
+                # Skip lines that are pure type descriptors (bool, integer, date, enum pipes)
+                _TYPE_ONLY = re.compile(
+                    r'^("?(?:bool|integer|string|date|enum|array|currency|float|DERIVED|'
+                    r'PRE-FILLED|PROGRESSIVE|number|decimal)'
+                    r'[^a-zA-Z]*(?:\(.*\))?[^a-zA-Z]*$'
+                    r'|^"[A-Z\-]+"$'  # "YYYY-MM-DD" etc
+                    r'|^"[^"]*"\s*\|'  # "val1" | "val2" pipe lists
+                    r'|^[A-Z_]+\s*$'  # bare constants
+                    r')', re.IGNORECASE)
                 if not meta.friendly_label:
                     for cl in comment_lines:
                         if not self._CLASS_TAG.search(cl) \
                                 and not self._ENABLED_IF.search(cl) \
                                 and cl and not cl.startswith('─') \
-                                and not cl.startswith('═'):
+                                and not cl.startswith('═') \
+                                and not _TYPE_ONLY.match(cl.strip()) \
+                                and not cl.strip().startswith('bool') \
+                                and len(cl.strip()) > 15:
                             meta.friendly_label = cl[:120]
                             break
 
@@ -653,9 +830,13 @@ class SchemaWalker:
                  or humanize(field_path.split('.')[-1].replace('[]', '')))
         label = label[:200]  # DB column width safety
 
-        # ENABLED IF gate
-        gate = parse_enabled_if(meta.enabled_if_raw, self.schema_name, section) \
-               if meta.enabled_if_raw else None
+        # ENABLED IF gate — use GATE_OVERRIDES first, then auto-parsed
+        if fqpath in GATE_OVERRIDES:
+            gate = GATE_OVERRIDES[fqpath]
+        elif meta.enabled_if_raw:
+            gate = parse_enabled_if(meta.enabled_if_raw, self.schema_name, section)
+        else:
+            gate = None
 
         # section_order from map; fallback to 999
         sec_order = self.section_map.get(section, 999)
@@ -728,7 +909,7 @@ def field_to_upsert(f: FieldDef) -> str:
     """
     enum_json   = _jsonb_or_null(f.enum_values)
     gate_json   = _jsonb_or_null(f.enabled_if)
-    default_val = _pg_literal(f.default_value)
+    default_val = _jsonb_or_null(f.default_value)
     default_lbl = _pg_literal(f.default_label)
 
     return (
