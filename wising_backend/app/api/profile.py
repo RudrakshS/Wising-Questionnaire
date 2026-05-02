@@ -234,16 +234,23 @@ async def patch_profile(
         )
 
     # Step 4: Re-fire India lock if residency inputs changed
+    # GUARD: only evaluate when days_in_india_current_year has been explicitly set.
+    # Without this guard, the engine defaults days=0 → NR-2 on the very first
+    # Layer 0 answer, producing a premature lock alert.
     new_india_lock = old_india_lock
     if india_residency_changed or "india_days" in [p.field_path.split(".")[-1] for p in patches]:
         rd = l1_india.get("residency_detail", l1_india)
-        india_rd = _dict_to_india_residency(rd)
-        result = evaluate_india_residency(l0_obj, india_rd)
-        new_india_lock = result.status.value
-        if "residency_detail" in l1_india:
-            l1_india["residency_detail"]["final_india_residency_status"] = new_india_lock
-        else:
-            l1_india["final_india_residency_status"] = new_india_lock
+        days_set = rd.get("days_in_india_current_year") is not None
+        # Also check if Layer 0 india_days is set (pre-fill source)
+        l0_days_set = l0_state.get("india_days") is not None
+        if days_set or l0_days_set:
+            india_rd = _dict_to_india_residency(rd)
+            result = evaluate_india_residency(l0_obj, india_rd)
+            new_india_lock = result.status.value
+            if "residency_detail" in l1_india:
+                l1_india["residency_detail"]["final_india_residency_status"] = new_india_lock
+            else:
+                l1_india["final_india_residency_status"] = new_india_lock
 
     # Step 5: Re-fire US lock if residency inputs changed
     new_us_lock = old_us_lock

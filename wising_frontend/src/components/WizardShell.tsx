@@ -92,10 +92,17 @@ export function WizardShell({ session }: Props) {
   }, [ws.answers]);
 
   // Visible questions list — filtered, sorted by section_order then wizard_order
+  // PRE-FILL map: Layer 1 fields that are pre-filled from Layer 0 (skip duplicates)
+  const PRE_FILL_DUPES = new Set([
+    "layer1_india.residency_detail.days_in_india_current_year",  // pre-filled from layer0.india_days
+  ]);
+
   const visibleFields = useMemo(() => {
     return (ws.fields || []).filter((f) => {
       // Skip DERIVED fields (engine-computed, never asked)
       if (f.classification === "DERIVED") return false;
+      // Skip pre-filled duplicates (already asked in Layer 0)
+      if (PRE_FILL_DUPES.has(f.field_path)) return false;
       // Jurisdiction gating
       if (f.schema_name === "layer1_india" && ws.jurisdiction !== "india_only" && ws.jurisdiction !== "dual") return false;
       if (f.schema_name === "layer1_us" && ws.jurisdiction !== "us_only" && ws.jurisdiction !== "dual") return false;
