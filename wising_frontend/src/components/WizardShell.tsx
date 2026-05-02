@@ -93,8 +93,10 @@ export function WizardShell({ session }: Props) {
 
   // Visible questions list — filtered, sorted by section_order then wizard_order
   // PRE-FILL map: Layer 1 fields that are pre-filled from Layer 0 (skip duplicates)
+  // Also skip fields that are the same concept as Layer 0 fields
   const PRE_FILL_DUPES = new Set([
     "layer1_india.residency_detail.days_in_india_current_year",  // pre-filled from layer0.india_days
+    "layer1_us.us_residency_detail.us_days_current_year",        // pre-filled from layer0.us_days
   ]);
 
   const visibleFields = useMemo(() => {
@@ -192,8 +194,21 @@ export function WizardShell({ session }: Props) {
       // Auto-advance for ALL field types after successful commit
       advance();
     } catch (e: unknown) {
-      const body = (e as { body?: { detail?: string } }).body;
-      setError(body?.detail ?? (e as Error).message ?? "Update failed");
+      // Safely extract error message — API may return object or string
+      let msg = "Update failed";
+      try {
+        const err = e as { body?: Record<string, unknown>; message?: string };
+        const detail = err.body?.detail ?? err.body?.message ?? err.body?.error;
+        if (typeof detail === "string") {
+          msg = detail;
+        } else if (detail && typeof detail === "object") {
+          msg = (detail as Record<string, unknown>).message as string
+            ?? JSON.stringify(detail);
+        } else if (err.message) {
+          msg = err.message;
+        }
+      } catch { /* fallback */ }
+      setError(msg);
     } finally {
       setPatching(null);
     }

@@ -195,8 +195,22 @@ LABEL_OVERRIDES: dict[str, str] = {
     "layer1_india.compliance_docs.section_197_cert.validity_end_date": "Lower TDS certificate validity end date",
     "layer1_india.compliance_docs.section_197_cert.covered_income_types": "Income types covered by lower TDS certificate",
     "layer1_india.compliance_docs.chapter_xiia_elected": "Have you ever elected the Chapter XII-A special tax regime? ⓘ",
+    # ── Layer 1 India: DTAA Treaty Elections (array template) ──
+    "layer1_india.dtaa.treaty_elections[].income_type": "Select the type of income",
+    "layer1_india.dtaa.treaty_elections[].elected_rate": "[CONFIG] Treaty rate for this income type",
+    "layer1_india.dtaa.treaty_elections[].treaty_article": "[CONFIG] Applicable treaty article",
     # ── Layer 1 India: Bank Accounts ──
     "layer1_india.bank_accounts":                    "Indian bank accounts",
+    "layer1_india.bank_accounts[].bank_name":         "Bank name",
+    "layer1_india.bank_accounts[].account_type":      "What type of bank account is this?",
+    "layer1_india.bank_accounts[].current_balance":   "Current account balance",
+    "layer1_india.bank_accounts[].current_balance_currency": "Account balance currency",
+    "layer1_india.bank_accounts[].annual_interest_rate": "Annual interest rate (e.g. 0.065 for 6.5%)",
+    "layer1_india.bank_accounts[].interest_credited_this_fy_inr": "Total interest credited this FY (INR)",
+    "layer1_india.bank_accounts[].account_conversion_date": "Date this account was converted (if applicable)",
+    "layer1_india.bank_accounts[].fcnr_maturity_date": "FCNR deposit maturity date",
+    "layer1_india.bank_accounts[].nro_balance":       "NRO account balance",
+    "layer1_india.bank_accounts[].nro_balance_currency": "NRO balance currency",
     # ── Layer 1 India: NRO Repatriation ──
     "layer1_india.nro_repatriation.cumulative_repatriated_usd_this_fy": "Total USD repatriated from NRO this FY",
     "layer1_india.nro_repatriation.pending_repatriation_inr": "Pending NRO repatriation amount (INR)",
@@ -204,12 +218,19 @@ LABEL_OVERRIDES: dict[str, str] = {
     # ── Layer 1 India: Property ──
     "layer1_india.property.has_indian_property_transaction": "Have you sold or are you selling Indian immovable property this FY?",
     "layer1_india.property.properties":              "Property transaction details",
+    "layer1_india.property.properties[].property_type": "What type of property is this?",
+    "layer1_india.property.properties[].acquisition_date": "Property acquisition date",
+    "layer1_india.property.properties[].actual_cost": "Original purchase cost (INR)",
+    "layer1_india.property.properties[].actual_cost_currency": "Purchase cost currency",
     # ── Layer 1 India: Financial Holdings ──
     "layer1_india.financial_holdings.has_financial_transactions": "Did you have any financial transactions (stocks, MFs, bonds) this FY?",
     "layer1_india.financial_holdings.transactions":   "Financial transaction details",
     # ── Layer 1 India: Commodities ──
     "layer1_india.commodities.has_commodity_transactions": "Did you have any commodity transactions (gold, silver, SGB) this FY?",
     "layer1_india.commodities.transactions":          "Commodity transaction details",
+    # ── Layer 1 India: Domestic Income / Agricultural ──
+    "layer1_india.domestic_income.has_agricultural_income": "Do you have any agricultural income?",
+    "layer1_india.domestic_income.agricultural_income_inr": "Total agricultural income this FY (INR)",
     # ── Layer 1 India: Unlisted Equity ──
     "layer1_india.unlisted_equity.has_unlisted_equity_transaction": "Did you sell any unlisted/private company shares this FY?",
     "layer1_india.unlisted_equity.transactions":      "Unlisted equity transaction details",
@@ -393,6 +414,55 @@ LABEL_OVERRIDES: dict[str, str] = {
     "layer1_us.nra_specific.us_real_property_disposed": "Did you dispose of US real property (FIRPTA)?",
     "layer1_us.nra_specific.firpta_withholding_usd": "FIRPTA withholding amount (USD)",
     "layer1_us.nra_specific.is_lrs_investor": "Are you an Indian resident investing via LRS?",
+}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# CLASSIFICATION OVERRIDES — Fields whose classification from JSONC
+# needs to be changed (e.g. DOB/PAN are OPTIONAL not REQUIRED).
+# ══════════════════════════════════════════════════════════════════════
+
+CLASSIFICATION_OVERRIDES: dict[str, str] = {
+    "layer1_india.profile.date_of_birth":  "OPTIONAL",
+    "layer1_india.profile.pan":            "OPTIONAL",
+}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# INPUT TYPE + ENUM VALUE OVERRIDES — Fields whose auto-detected
+# input_type/enum_values from JSONC comments are wrong or missing.
+# ══════════════════════════════════════════════════════════════════════
+
+INPUT_TYPE_OVERRIDES: dict[str, str] = {
+    "layer1_india.dtaa.tax_residency_country":              "enum",
+    "layer1_india.dtaa.treaty_elections[].income_type":      "enum",
+    "layer1_india.dtaa.treaty_elections[].elected_rate":     "string",
+    "layer1_india.dtaa.treaty_elections[].treaty_article":   "string",
+    "layer1_india.bank_accounts[].account_type":             "enum",
+    "layer1_india.property.properties[].property_type":      "enum",
+}
+
+ENUM_VALUE_OVERRIDES: dict[str, list[str]] = {
+    "layer1_india.dtaa.tax_residency_country": [
+        "US", "AE", "GB", "SG", "CA", "AU", "DE", "FR", "NL", "CH",
+        "JP", "HK", "NZ", "IE", "SE", "IN",
+    ],
+    "layer1_india.dtaa.treaty_elections[].income_type": [
+        "interest", "dividend", "royalty", "fts", "capital_gains",
+    ],
+    "layer1_india.bank_accounts[].account_type": [
+        "NRE", "NRO", "FCNR", "RFC", "SAVINGS", "CURRENT",
+    ],
+    "layer1_india.property.properties[].property_type": [
+        "residential", "commercial", "land", "agricultural_rural", "under_construction",
+    ],
+}
+
+# Fields that should be marked DERIVED (hidden from wizard) because
+# they come from config files, not user input.
+FORCE_DERIVED: set[str] = {
+    "layer1_india.dtaa.treaty_elections[].elected_rate",
+    "layer1_india.dtaa.treaty_elections[].treaty_article",
 }
 
 
@@ -1129,11 +1199,28 @@ class SchemaWalker:
                                      and not isinstance(json_value, (dict, list))) \
                       else None
 
+        # Apply classification override
+        classification = CLASSIFICATION_OVERRIDES.get(fqpath, meta.classification)
+
+        # Apply input_type override
+        if fqpath in INPUT_TYPE_OVERRIDES:
+            input_type = INPUT_TYPE_OVERRIDES[fqpath]
+
+        # Apply enum_values override
+        if fqpath in ENUM_VALUE_OVERRIDES:
+            enum_values = ENUM_VALUE_OVERRIDES[fqpath]
+            if input_type != 'enum':
+                input_type = 'enum'
+
+        # Force DERIVED for config-sourced fields
+        if fqpath in FORCE_DERIVED:
+            classification = 'DERIVED'
+
         return FieldDef(
             field_path     = fqpath,
             schema_name    = self.schema_name,
             section        = section,
-            classification = meta.classification,
+            classification = classification,
             friendly_label = label,
             input_type     = input_type,
             enum_values    = enum_values,

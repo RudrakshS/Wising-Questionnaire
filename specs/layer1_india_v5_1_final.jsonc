@@ -191,7 +191,7 @@
   "profile": {
 
     "date_of_birth": null,
-    // CLASSIFICATION: REQUIRED
+    // CLASSIFICATION: OPTIONAL
     // "YYYY-MM-DD"
     // Determines: senior citizen (60+) higher basic exemption under old regime,
     // super senior (80+) advance tax exemption, slab breakpoints.

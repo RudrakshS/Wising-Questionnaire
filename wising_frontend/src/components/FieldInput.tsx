@@ -59,6 +59,29 @@ const ENUM_DISPLAY: Record<string, string> = {
   royalty: "Royalty Income",
   fts: "Fees for Technical Services",
   capital_gains: "Capital Gains",
+  // Property types
+  residential: "Residential",
+  commercial: "Commercial",
+  land: "Land",
+  agricultural_rural: "Agricultural / Rural (Exempt)",
+  under_construction: "Under Construction",
+  // Country codes
+  US: "United States",
+  AE: "UAE",
+  GB: "United Kingdom",
+  SG: "Singapore",
+  CA: "Canada",
+  AU: "Australia",
+  DE: "Germany",
+  FR: "France",
+  NL: "Netherlands",
+  CH: "Switzerland",
+  JP: "Japan",
+  HK: "Hong Kong",
+  NZ: "New Zealand",
+  IE: "Ireland",
+  SE: "Sweden",
+  IN: "India",
 };
 
 // ── Info tooltips for terms marked with ⓘ ──────────────────────────
