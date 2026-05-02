@@ -249,6 +249,150 @@ LABEL_OVERRIDES: dict[str, str] = {
     "layer1_india.domestic_income.business_income.closing_stock_inr": "Closing stock value at 31 March (INR)",
     "layer1_india.domestic_income.business_income.gst_registration_status": "GST registration status",
     "layer1_india.domestic_income.business_income.gst_collected_inr": "GST collected from customers this FY (INR)",
+
+    # ── Layer 1 US — Profile ──
+    "layer1_us.profile.date_of_birth": "What is your date of birth?",
+    "layer1_us.profile.filing_status": "What is your US filing status?",
+    "layer1_us.profile.ssn_or_itin": "What is your SSN or ITIN?",
+    "layer1_us.profile.ssn_or_itin_type": "Do you have an SSN, ITIN, or neither?",
+    "layer1_us.profile.dependents_count": "How many dependents will you claim on your US return?",
+    "layer1_us.profile.spouse_is_us_person": "Is your spouse a US citizen or resident?",
+
+    # ── Layer 1 US — Residency Detail ──
+    "layer1_us.us_residency_detail.is_us_citizen": "Are you a US citizen?",
+    "layer1_us.us_residency_detail.has_green_card": "Do you hold a valid US Green Card (Form I-551)?",
+    "layer1_us.us_residency_detail.green_card_grant_date": "When was your Green Card granted?",
+    "layer1_us.us_residency_detail.i407_surrendered_date": "When did you surrender your Green Card (Form I-407)?",
+    "layer1_us.us_residency_detail.us_days_current_year": "How many days were you in the US in calendar year 2026?",
+    "layer1_us.us_residency_detail.us_days_minus_1_year": "How many days were you in the US in calendar year 2025?",
+    "layer1_us.us_residency_detail.us_days_minus_2_years": "How many days were you in the US in calendar year 2024?",
+    "layer1_us.us_residency_detail.exempt_individual_status": "Are you an exempt individual for SPT purposes?",
+    "layer1_us.us_residency_detail.closer_connection_claim": "Do you claim a closer connection to a foreign country (Form 8840)?",
+    "layer1_us.us_residency_detail.first_year_choice_election": "Are you making a first-year choice election (§7701(b)(4))?",
+    "layer1_us.us_residency_detail.s6013g_joint_election": "Is your NRA spouse making a §6013(g) joint-filing election?",
+
+    # ── Layer 1 US — State Residency ──
+    "layer1_us.state_residency.primary_state_of_residence": "What is your primary US state of residence?",
+    "layer1_us.state_residency.moved_states_this_year": "Did you move between US states this year?",
+    "layer1_us.state_residency.previous_state": "What was your previous state of residence?",
+    "layer1_us.state_residency.move_date": "When did you move to your current state?",
+    "layer1_us.state_residency.state_days_in_current_state": "How many days were you in your current state?",
+    "layer1_us.state_residency.ca_planning_departure": "Are you planning to leave California this year?",
+    "layer1_us.state_residency.ca_safe_harbor_employment_contract": "Do you have a 546-day foreign employment contract (CA safe harbor)?",
+    "layer1_us.state_residency.ca_retains_property_or_voter_reg": "Do you retain CA property or voter registration?",
+    "layer1_us.state_residency.ny_183_day_rule_met": "Did you meet New York's 183-day rule this year?",
+    "layer1_us.state_residency.ny_permanent_place_of_abode": "Do you maintain a permanent place of abode in New York?",
+
+    # ── Layer 1 US — US-Source Income ──
+    "layer1_us.income_us_source.self_employment.has_se_income": "Do you have self-employment income?",
+    "layer1_us.income_us_source.self_employment.gross_receipts_usd": "Total self-employment gross receipts (USD)",
+    "layer1_us.income_us_source.self_employment.expenses_usd": "Total self-employment expenses (USD)",
+    "layer1_us.income_us_source.self_employment.qbi_eligible": "Is your business eligible for the §199A QBI deduction?",
+    "layer1_us.income_us_source.self_employment.is_specified_service_trade": "Is your business a Specified Service Trade or Business (SSTB)?",
+    "layer1_us.income_us_source.interest_us_source_usd": "US-source interest income (1099-INT, USD)",
+    "layer1_us.income_us_source.ordinary_dividends_us_source_usd": "US-source ordinary dividends (1099-DIV, USD)",
+    "layer1_us.income_us_source.qualified_dividends_us_source_usd": "US-source qualified dividends (USD)",
+    "layer1_us.income_us_source.stcg_us_source_usd": "US-source short-term capital gains (USD)",
+    "layer1_us.income_us_source.ltcg_us_source_usd": "US-source long-term capital gains (USD)",
+    "layer1_us.income_us_source.rental_income_us_source_usd": "US-source rental income (USD)",
+    "layer1_us.income_us_source.royalty_income_us_source_usd": "US-source royalty income (USD)",
+    "layer1_us.income_us_source.k1_passthrough_income_usd": "K-1 passthrough income from US partnerships/S-corps (USD)",
+    "layer1_us.income_us_source.ira_distributions_usd": "IRA distribution amount this year (USD)",
+    "layer1_us.income_us_source.401k_distributions_usd": "401(k) distribution amount this year (USD)",
+    "layer1_us.income_us_source.social_security_benefits_usd": "Social Security benefits received (USD)",
+
+    # ── Layer 1 US — Foreign-Source Income ──
+    "layer1_us.income_foreign_source.foreign_interest_usd": "Foreign-source interest income (NRO/NRE/FCNR, USD)",
+    "layer1_us.income_foreign_source.foreign_dividends_usd": "Foreign-source dividend income (USD)",
+    "layer1_us.income_foreign_source.foreign_stcg_usd": "Foreign-source short-term capital gains (USD)",
+    "layer1_us.income_foreign_source.foreign_ltcg_usd": "Foreign-source long-term capital gains (USD)",
+    "layer1_us.income_foreign_source.foreign_rental_income_usd": "Foreign rental income (USD)",
+    "layer1_us.income_foreign_source.foreign_pension_income_usd": "Foreign pension income (EPF/PPF, USD)",
+
+    # ── Layer 1 US — Equity Compensation ──
+    "layer1_us.equity_compensation.has_equity_comp": "Do you have any equity compensation (ISO, NSO, RSU, ESPP)?",
+
+    # ── Layer 1 US — FEIE ──
+    "layer1_us.foreign_earned_income.claims_feie": "Do you want to claim the Foreign Earned Income Exclusion (Form 2555)?",
+    "layer1_us.foreign_earned_income.qualification_test": "Which FEIE qualification test are you using?",
+    "layer1_us.foreign_earned_income.tax_home_country": "What country is your tax home?",
+    "layer1_us.foreign_earned_income.physical_presence_start_date": "Start date of your 12-month physical presence period",
+    "layer1_us.foreign_earned_income.physical_presence_end_date": "End date of your 12-month physical presence period",
+    "layer1_us.foreign_earned_income.days_in_us_during_test_period": "Days in the US during the physical presence test period",
+    "layer1_us.foreign_earned_income.bona_fide_residence_start_date": "Start date of your bona fide foreign residence",
+    "layer1_us.foreign_earned_income.foreign_earned_income_usd": "Total foreign earned income (USD)",
+    "layer1_us.foreign_earned_income.foreign_housing_expenses_usd": "Foreign housing expenses (rent, utilities, insurance, USD)",
+
+    # ── Layer 1 US — Real Estate ──
+    "layer1_us.real_estate.has_real_estate_transaction": "Did you sell or dispose of any real property this year?",
+
+    # ── Layer 1 US — Retirement Accounts ──
+    "layer1_us.retirement_accounts.traditional_ira_contribution_usd": "Traditional IRA contributions (USD)",
+    "layer1_us.retirement_accounts.roth_ira_contribution_usd": "Roth IRA contributions (USD)",
+    "layer1_us.retirement_accounts.backdoor_roth_executed": "Did you execute a backdoor Roth conversion?",
+    "layer1_us.retirement_accounts.401k_employee_contribution_usd": "Employee 401(k) contributions (USD)",
+    "layer1_us.retirement_accounts.401k_employer_match_usd": "Employer 401(k) match (USD)",
+    "layer1_us.retirement_accounts.roth_401k_contribution_usd": "Roth 401(k) contributions (USD)",
+    "layer1_us.retirement_accounts.hsa_contribution_usd": "HSA contributions (USD)",
+    "layer1_us.retirement_accounts.solo_401k_contribution_usd": "Solo 401(k) contributions (USD)",
+    "layer1_us.retirement_accounts.sep_ira_contribution_usd": "SEP IRA contributions (USD)",
+    "layer1_us.retirement_accounts.indian_epf_balance_usd": "Indian EPF balance (USD equivalent)",
+    "layer1_us.retirement_accounts.indian_ppf_balance_usd": "Indian PPF balance (USD equivalent)",
+    "layer1_us.retirement_accounts.indian_nps_balance_usd": "Indian NPS balance (USD equivalent)",
+
+    # ── Layer 1 US — Foreign Entities ──
+    "layer1_us.foreign_entities.owns_10_percent_foreign_corp": "Do you own ≥10% of any foreign corporation?",
+    "layer1_us.foreign_entities.owns_10_percent_foreign_partnership": "Do you own ≥10% of any foreign partnership?",
+    "layer1_us.foreign_entities.owns_foreign_disregarded_entity": "Do you own a foreign disregarded entity?",
+
+    # ── Layer 1 US — Foreign Gifts & Trusts ──
+    "layer1_us.foreign_gifts_and_trusts.received_foreign_gifts_above_100k": "Did you receive foreign gifts totaling over $100,000 this year?",
+    "layer1_us.foreign_gifts_and_trusts.is_us_beneficiary_of_foreign_trust": "Are you a US beneficiary of a foreign trust?",
+    "layer1_us.foreign_gifts_and_trusts.received_gift_from_covered_expatriate": "Did you receive a gift or bequest from a covered expatriate?",
+
+    # ── Layer 1 US — Deductions & Credits ──
+    "layer1_us.itemized_deductions_and_credits.use_standard_or_itemized": "Standard deduction or itemized deductions?",
+    "layer1_us.itemized_deductions_and_credits.state_and_local_taxes_paid_usd": "State and local taxes paid (SALT, USD)",
+    "layer1_us.itemized_deductions_and_credits.mortgage_interest_paid_usd": "Mortgage interest paid (USD)",
+    "layer1_us.itemized_deductions_and_credits.mortgage_acquisition_date": "When was your mortgage originated?",
+    "layer1_us.itemized_deductions_and_credits.charitable_contributions_cash_usd": "Cash charitable contributions (USD)",
+    "layer1_us.itemized_deductions_and_credits.charitable_contributions_appreciated_usd": "Appreciated property charitable contributions (USD)",
+    "layer1_us.itemized_deductions_and_credits.medical_expenses_usd": "Medical expenses (USD)",
+    "layer1_us.itemized_deductions_and_credits.casualty_loss_federal_disaster_usd": "Casualty/disaster loss (USD)",
+    "layer1_us.itemized_deductions_and_credits.hsa_contributions_usd": "HSA contributions (above-the-line, USD)",
+    "layer1_us.itemized_deductions_and_credits.student_loan_interest_usd": "Student loan interest paid (up to $2,500, USD)",
+    "layer1_us.itemized_deductions_and_credits.educator_expenses_usd": "Educator expenses (up to $300, USD)",
+    "layer1_us.itemized_deductions_and_credits.child_tax_credit_dependents": "Qualifying children for Child Tax Credit (count)",
+    "layer1_us.itemized_deductions_and_credits.credit_for_other_dependents": "Number of other dependents ($500 credit each)",
+    "layer1_us.itemized_deductions_and_credits.child_and_dependent_care_expenses_usd": "Child and dependent care expenses (USD)",
+    "layer1_us.itemized_deductions_and_credits.education_credits_aotc_usd": "American Opportunity Tax Credit amount (USD)",
+    "layer1_us.itemized_deductions_and_credits.education_credits_llc_usd": "Lifetime Learning Credit amount (USD)",
+    "layer1_us.itemized_deductions_and_credits.saver_credit_eligible": "Are you eligible for the Saver's Credit?",
+    "layer1_us.itemized_deductions_and_credits.funded_529_plan": "Did you contribute to a 529 education savings plan?",
+    "layer1_us.itemized_deductions_and_credits.529_contributions_usd": "529 plan contributions (USD)",
+    "layer1_us.itemized_deductions_and_credits.529_state_deduction_state": "Which state allows a 529 deduction?",
+
+    # ── Layer 1 US — AMT ──
+    "layer1_us.amt_inputs.private_activity_bond_interest_usd": "Private activity bond interest (AMT preference, USD)",
+    "layer1_us.amt_inputs.minimum_tax_credit_carryforward_usd": "Minimum tax credit carryforward from prior years (USD)",
+
+    # ── Layer 1 US — FTC ──
+    "layer1_us.ftc_inputs.claims_ftc": "Are you claiming the Foreign Tax Credit (Form 1116)?",
+    "layer1_us.ftc_inputs.claims_ftc_simplified_under_300": "Are you using the simplified FTC election (≤$300 foreign tax)?",
+
+    # ── Layer 1 US — Withholding ──
+    "layer1_us.withholding_and_estimated.estimated_tax_q1_apr15_usd": "Q1 estimated tax payment (Apr 15, USD)",
+    "layer1_us.withholding_and_estimated.estimated_tax_q2_jun15_usd": "Q2 estimated tax payment (Jun 15, USD)",
+    "layer1_us.withholding_and_estimated.estimated_tax_q3_sep15_usd": "Q3 estimated tax payment (Sep 15, USD)",
+    "layer1_us.withholding_and_estimated.estimated_tax_q4_jan15_usd": "Q4 estimated tax payment (Jan 15, USD)",
+    "layer1_us.withholding_and_estimated.prior_year_total_tax_usd": "Prior year total federal tax (for safe harbor, USD)",
+
+    # ── Layer 1 US — NRA-Specific ──
+    "layer1_us.nra_specific.files_form_1040nr": "Will you file Form 1040-NR?",
+    "layer1_us.nra_specific.form_w7_itin_application_filed": "Have you filed Form W-7 for an ITIN?",
+    "layer1_us.nra_specific.us_real_property_disposed": "Did you dispose of US real property (FIRPTA)?",
+    "layer1_us.nra_specific.firpta_withholding_usd": "FIRPTA withholding amount (USD)",
+    "layer1_us.nra_specific.is_lrs_investor": "Are you an Indian resident investing via LRS?",
 }
 
 
@@ -321,6 +465,91 @@ GATE_OVERRIDES: dict[str, dict | None] = {
     "layer1_india.lrs_outbound": {
         "field": "layer1_india.residency_detail.final_india_residency_status",
         "op": "eq", "value": "ROR"
+    },
+
+    # ══════════════════════════════════════════════════════════════════
+    # Layer 1 US — Gate Overrides
+    # ══════════════════════════════════════════════════════════════════
+
+    # US Residency: green card grant date
+    "layer1_us.us_residency_detail.green_card_grant_date": {
+        "field": "layer1_us.us_residency_detail.has_green_card", "op": "eq", "value": True
+    },
+    "layer1_us.us_residency_detail.i407_surrendered_date": {
+        "field": "layer1_us.us_residency_detail.has_green_card", "op": "eq", "value": True
+    },
+    # Closer connection: SPT met AND < 183 days
+    "layer1_us.us_residency_detail.closer_connection_claim": {
+        "and": [
+            {"field": "layer1_us.us_residency_detail.spt_test_met", "op": "eq", "value": True},
+            {"field": "layer1_us.us_residency_detail.us_days_current_year", "op": "lt", "value": 183},
+        ]
+    },
+    # Spouse question: filing status in [mfj, mfs, hoh]
+    "layer1_us.profile.spouse_is_us_person": {
+        "field": "layer1_us.profile.filing_status",
+        "op": "in", "value": ["mfj", "mfs", "hoh"]
+    },
+    # State residency: moved_states_this_year gates
+    "layer1_us.state_residency.previous_state": {
+        "field": "layer1_us.state_residency.moved_states_this_year", "op": "eq", "value": True
+    },
+    "layer1_us.state_residency.move_date": {
+        "field": "layer1_us.state_residency.moved_states_this_year", "op": "eq", "value": True
+    },
+    "layer1_us.state_residency.state_days_in_current_state": {
+        "field": "layer1_us.state_residency.moved_states_this_year", "op": "eq", "value": True
+    },
+    # CA gates
+    "layer1_us.state_residency.ca_planning_departure": {
+        "or": [
+            {"field": "layer1_us.state_residency.primary_state_of_residence", "op": "eq", "value": "CA"},
+            {"field": "layer1_us.state_residency.previous_state", "op": "eq", "value": "CA"},
+        ]
+    },
+    "layer1_us.state_residency.ca_safe_harbor_employment_contract": {
+        "field": "layer1_us.state_residency.ca_planning_departure", "op": "eq", "value": True
+    },
+    "layer1_us.state_residency.ca_retains_property_or_voter_reg": {
+        "field": "layer1_us.state_residency.ca_planning_departure", "op": "eq", "value": True
+    },
+    # NY gates
+    "layer1_us.state_residency.ny_183_day_rule_met": {
+        "or": [
+            {"field": "layer1_us.state_residency.primary_state_of_residence", "op": "eq", "value": "NY"},
+            {"field": "layer1_us.state_residency.previous_state", "op": "eq", "value": "NY"},
+        ]
+    },
+    "layer1_us.state_residency.ny_permanent_place_of_abode": {
+        "or": [
+            {"field": "layer1_us.state_residency.primary_state_of_residence", "op": "eq", "value": "NY"},
+            {"field": "layer1_us.state_residency.previous_state", "op": "eq", "value": "NY"},
+        ]
+    },
+    # Foreign-source income: lock must be USC/RA/DS (not NRA)
+    "layer1_us.income_foreign_source": {
+        "field": "layer1_us.us_residency_detail.final_us_residency_status",
+        "op": "in", "value": ["US_CITIZEN", "RESIDENT_ALIEN", "DUAL_STATUS"]
+    },
+    # NRA-specific section: lock = NRA
+    "layer1_us.nra_specific.files_form_1040nr": {
+        "field": "layer1_us.us_residency_detail.final_us_residency_status",
+        "op": "eq", "value": "NON_RESIDENT_ALIEN"
+    },
+    "layer1_us.nra_specific.form_w7_itin_application_filed": {
+        "field": "layer1_us.us_residency_detail.final_us_residency_status",
+        "op": "eq", "value": "NON_RESIDENT_ALIEN"
+    },
+    "layer1_us.nra_specific.us_real_property_disposed": {
+        "field": "layer1_us.us_residency_detail.final_us_residency_status",
+        "op": "eq", "value": "NON_RESIDENT_ALIEN"
+    },
+    "layer1_us.nra_specific.firpta_withholding_usd": {
+        "field": "layer1_us.nra_specific.us_real_property_disposed", "op": "eq", "value": True
+    },
+    "layer1_us.nra_specific.is_lrs_investor": {
+        "field": "layer1_us.us_residency_detail.final_us_residency_status",
+        "op": "eq", "value": "NON_RESIDENT_ALIEN"
     },
 }
 

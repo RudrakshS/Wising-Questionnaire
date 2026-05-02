@@ -43,6 +43,10 @@ def evaluate_gate(gate_json: dict | None, context: dict) -> bool:
     if gate_json is None:
         return True  # No gate = always visible
 
+    # Fields with _parse_error in their gate cannot be evaluated → hide
+    if gate_json.get("_parse_error"):
+        return False
+
     if "and" in gate_json:
         return all(evaluate_gate(c, context) for c in gate_json["and"])
 
@@ -102,6 +106,12 @@ def evaluate_gate(gate_json: dict | None, context: dict) -> bool:
         #        "op": "contains", "value": "s44AD"}
         if isinstance(actual, list):
             return expected in actual
+        return False
+
+    elif op == "not_in":
+        # actual is NOT one of the expected list values AND is not null
+        if isinstance(expected, list):
+            return actual is not None and actual not in expected
         return False
 
     return False

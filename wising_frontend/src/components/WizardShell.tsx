@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { api } from "@/lib/api";
 import { evaluateGate } from "@/lib/gates";
 import { FieldInput } from "@/components/FieldInput";
@@ -53,45 +53,97 @@ export function WizardShell({ session }: Props) {
   const [animating, setAnimating] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
 
-  // Load schema
+  // ── Loading state: prevent flash of "All questions answered" ──
+  const [fieldsLoading, setFieldsLoading] = useState(true);
+
+  // Load schema — initial (layer0 only) and when jurisdiction changes
   useEffect(() => {
-    api.getSchema().then((d) => setWs((p) => ({ ...p, fields: d.fields }))).catch(console.error);
+    setFieldsLoading(true);
+    api.getSchema().then((d) => {
+      setWs((p) => ({ ...p, fields: d.fields }));
+      setFieldsLoading(false);
+    }).catch((e) => { console.error(e); setFieldsLoading(false); });
   }, []);
+
   useEffect(() => {
     if (!ws.jurisdiction) return;
-    api.getSchema(ws.jurisdiction).then((d) => setWs((p) => ({ ...p, fields: d.fields }))).catch(console.error);
+    setFieldsLoading(true);
+    api.getSchema(ws.jurisdiction).then((d) => {
+      setWs((p) => ({ ...p, fields: d.fields }));
+      setFieldsLoading(false);
+    }).catch((e) => { console.error(e); setFieldsLoading(false); });
   }, [ws.jurisdiction]);
 
-  // Build gate context as nested object: { layer0: { is_indian_citizen: true, ... }, layer1_india: { residency_detail: { days_in_india_current_year: 200 } } }
-  const gateCtx: Record<string, unknown> = {};
-  Object.entries(ws.answers).forEach(([path, val]) => {
-    // Build nested structure so resolvePath("layer0.is_indian_citizen") works
-    const parts = path.split(".");
-    let cur: Record<string, unknown> = gateCtx;
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!(parts[i] in cur) || typeof cur[parts[i]] !== "object") {
-        cur[parts[i]] = {};
+  // Build gate context as nested object for cross-layer resolution
+  const gateCtx = useMemo(() => {
+    const ctx: Record<string, unknown> = {};
+    Object.entries(ws.answers).forEach(([path, val]) => {
+      const parts = path.split(".");
+      let cur: Record<string, unknown> = ctx;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!(parts[i] in cur) || typeof cur[parts[i]] !== "object") {
+          cur[parts[i]] = {};
+        }
+        cur = cur[parts[i]] as Record<string, unknown>;
       }
-      cur = cur[parts[i]] as Record<string, unknown>;
-    }
-    cur[parts[parts.length - 1]] = val;
-  });
+      cur[parts[parts.length - 1]] = val;
+    });
+    return ctx;
+  }, [ws.answers]);
 
-  // Visible questions list (no DERIVED, no array containers, gate-filtered)
-  const visibleFields = (ws.fields || []).filter((f) => {
-    // Skip DERIVED fields (engine-computed, never asked)
-    if (f.classification === "DERIVED") return false;
-    // Jurisdiction gating: only show layer1 fields when jurisdiction matches
-    if (f.schema_name === "layer1_india" && ws.jurisdiction !== "india_only" && ws.jurisdiction !== "dual") return false;
-    if (f.schema_name === "layer1_us" && ws.jurisdiction !== "us_only" && ws.jurisdiction !== "dual") return false;
-    // Gate evaluation: pass the full nested context so cross-layer references work
-    if (!evaluateGate(f.enabled_if as Record<string, unknown>, gateCtx as Record<string, unknown>)) return false;
-    return true;
-  });
+  // Visible questions list — filtered, sorted by section_order then wizard_order
+  const visibleFields = useMemo(() => {
+    return (ws.fields || []).filter((f) => {
+      // Skip DERIVED fields (engine-computed, never asked)
+      if (f.classification === "DERIVED") return false;
+      // Jurisdiction gating
+      if (f.schema_name === "layer1_india" && ws.jurisdiction !== "india_only" && ws.jurisdiction !== "dual") return false;
+      if (f.schema_name === "layer1_us" && ws.jurisdiction !== "us_only" && ws.jurisdiction !== "dual") return false;
+      // Gate evaluation
+      if (!evaluateGate(f.enabled_if as Record<string, unknown>, gateCtx as Record<string, unknown>)) return false;
+      return true;
+    }).sort((a, b) => {
+      // Sort by section_order first, then wizard_order — this follows JSONC spec order
+      const so = (a.section_order ?? 999) - (b.section_order ?? 999);
+      if (so !== 0) return so;
+      return (a.wizard_order ?? 999) - (b.wizard_order ?? 999);
+    });
+  }, [ws.fields, ws.jurisdiction, gateCtx]);
+
+  // When jurisdiction changes (schema reload), jump past already-answered fields
+  const prevJurisdiction = useRef(ws.jurisdiction);
+  useEffect(() => {
+    if (ws.jurisdiction !== prevJurisdiction.current && prevJurisdiction.current !== null) {
+      // Jurisdiction changed — find the first unanswered field
+      const firstUnanswered = visibleFields.findIndex(
+        (f) => ws.answers[f.field_path] === undefined
+      );
+      setQIndex(firstUnanswered >= 0 ? firstUnanswered : 0);
+    }
+    prevJurisdiction.current = ws.jurisdiction;
+  }, [ws.jurisdiction, visibleFields, ws.answers]);
 
   const currentField = visibleFields[qIndex] ?? null;
   const totalQ = visibleFields.length;
-  const { percentage } = ws.completion;
+
+  // Compute client-side completion percentage from visible required/conditional fields
+  const clientPercentage = useMemo(() => {
+    const relevant = visibleFields.filter(
+      (f) => f.classification === "REQUIRED" || f.classification === "CONDITIONAL"
+    );
+    if (relevant.length === 0) return 0;
+    const filled = relevant.filter((f) => ws.answers[f.field_path] !== undefined).length;
+    return Math.round((filled / relevant.length) * 100);
+  }, [visibleFields, ws.answers]);
+
+  // Use the higher of server pct vs client pct (server may lag behind)
+  const percentage = Math.max(ws.completion.percentage ?? 0, clientPercentage);
+  const filledRequired = visibleFields.filter(
+    (f) => (f.classification === "REQUIRED" || f.classification === "CONDITIONAL") && ws.answers[f.field_path] !== undefined
+  ).length;
+  const totalRequired = visibleFields.filter(
+    (f) => f.classification === "REQUIRED" || f.classification === "CONDITIONAL"
+  ).length;
 
   // Navigate with animation
   const goTo = useCallback((idx: number) => {
@@ -99,7 +151,6 @@ export function WizardShell({ session }: Props) {
     const target = Math.max(0, Math.min(idx, totalQ - 1));
     if (target === qIndex) return;
     setAnimating(true);
-    // Trigger exit
     stageRef.current?.classList.add("exit");
     setTimeout(() => {
       setQIndex(target);
@@ -108,7 +159,7 @@ export function WizardShell({ session }: Props) {
     }, 280);
   }, [qIndex, totalQ, animating]);
 
-  // Auto-advance after commit (for booleans/enums)
+  // Auto-advance after commit
   const advance = useCallback(() => {
     if (qIndex < totalQ - 1) {
       setTimeout(() => goTo(qIndex + 1), 350);
@@ -131,10 +182,8 @@ export function WizardShell({ session }: Props) {
       if (res.lock_changed && res.lock_change_alert) {
         setLockAlert(res.lock_change_alert);
       }
-      // Auto-advance for boolean/enum
-      if (field.input_type === "boolean" || field.input_type === "enum") {
-        advance();
-      }
+      // Auto-advance for ALL field types after successful commit
+      advance();
     } catch (e: unknown) {
       const body = (e as { body?: { detail?: string } }).body;
       setError(body?.detail ?? (e as Error).message ?? "Update failed");
@@ -207,7 +256,7 @@ export function WizardShell({ session }: Props) {
 
       {/* Progress seeker */}
       <div className="progress-seeker">
-        <div className="progress-seeker-fill" style={{ width: `${percentage}%` }} />
+        <div className="progress-seeker-fill" style={{ width: `${percentage}%`, transition: "width 0.5s ease" }} />
       </div>
 
       {/* Slide-out nav */}
@@ -293,7 +342,13 @@ export function WizardShell({ session }: Props) {
           </div>
         )}
 
-        {currentField ? (
+        {fieldsLoading ? (
+          /* Loading state — prevents flash of "All questions answered" */
+          <div style={{ textAlign: "center", color: "var(--text-muted)", paddingTop: 80 }}>
+            <span className="spinner" style={{ width: 32, height: 32 }} />
+            <div style={{ marginTop: 16, fontSize: "0.9rem" }}>Loading questions…</div>
+          </div>
+        ) : currentField ? (
           <div className="question-stage" ref={stageRef} key={currentField.field_path}>
             <div className="question-meta">
               <span className="question-number">Q{qIndex + 1}/{totalQ}</span>
@@ -355,7 +410,7 @@ export function WizardShell({ session }: Props) {
           <span className="dot green" />
           <span>{percentage}%</span>
         </div>
-        <span>{ws.completion.filled_required}/{ws.completion.total_required} required</span>
+        <span>{filledRequired}/{totalRequired} required</span>
         {ws.india_lock && <span>India: {ws.india_lock}</span>}
         {ws.us_lock && <span>US: {ws.us_lock}</span>}
         <span style={{ color: "var(--text-muted)" }}>{ws.wizard_phase.replace(/_/g, " ")}</span>
